@@ -46,7 +46,8 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 			c.host.Log("info", fmt.Sprintf("dry run: %s would move to weight %d", decision.AuthID, decision.Weight))
 			continue
 		}
-		if errWrite := c.write(names[decision.AuthID], decision.AuthID, decision.Weight); errWrite != nil {
+		saved, errWrite := c.write(names[decision.AuthID], decision.AuthID, decision.Weight)
+		if errWrite != nil {
 			c.host.Log("warn", fmt.Sprintf("weight write-back failed for %s: %v", decision.AuthID, errWrite))
 			continue
 		}
@@ -54,7 +55,9 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 		// rejected write permanently outstanding, because every later cycle
 		// would see the weight as already on disk and skip it.
 		c.engine.Commit(decision.AuthID, decision.Weight)
-		report.Wrote++
+		if saved {
+			report.Wrote++
+		}
 	}
 	return report, nil
 }
@@ -100,10 +103,15 @@ func (c *Controller) probe(authIndex string, raw []byte, now time.Time) balancer
 // replaces the whole document with no compare-and-swap, so patching bytes read
 // earlier in the cycle would silently undo anything written in between —
 // a token refresh, most importantly.
-func (c *Controller) write(name, authIndex string, weight int64) error {
+//
+// It reports whether a save actually reached the host: a weight already on
+// disk is skipped, and counting that skip as a write would tell the operator
+// the routing accumulator had been wiped when nothing moved. A restart hits
+// this path for every credential, having lost its record of what it wrote.
+func (c *Controller) write(name, authIndex string, weight int64) (bool, error) {
 	fresh, raw, err := c.host.AuthGet(authIndex)
 	if err != nil {
-		return fmt.Errorf("re-read before save: %w", err)
+		return false, fmt.Errorf("re-read before save: %w", err)
 	}
 	// The re-read is also the authority on where the credential lives: CPA may
 	// have re-created the file under a different name since the probe.
@@ -111,16 +119,19 @@ func (c *Controller) write(name, authIndex string, weight int64) error {
 		name = fresh
 	}
 	if name == "" {
-		return fmt.Errorf("no auth file name for %s", authIndex)
+		return false, fmt.Errorf("no auth file name for %s", authIndex)
 	}
 	if current, ok := authfile.Weight(raw); ok && current == weight {
-		return nil
+		return false, nil
 	}
 	patched, err := authfile.SetWeight(raw, weight)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return c.host.AuthSave(name, patched)
+	if err = c.host.AuthSave(name, patched); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func failed(authIndex string, err error) balancer.Observation {

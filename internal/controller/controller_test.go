@@ -397,3 +397,28 @@ func TestHealthyProbeReportsNoError(t *testing.T) {
 		t.Fatalf("healthy cycle reported %q", d.Error)
 	}
 }
+
+func TestRestartDoesNotClaimAnAccumulatorWipe(t *testing.T) {
+	// A restart loses the in-memory record of what was written, so the first
+	// warm cycle re-proposes every weight. The re-read then finds the value
+	// already on disk and skips the save. Counting that skip as a write makes
+	// accumulator_wiped lie in exactly the case it exists to answer.
+	h := newFakeHost()
+	run(t, ctl(h), 2)
+	if len(h.saves) != 1 {
+		t.Fatalf("got %d saves in the first run", len(h.saves))
+	}
+	saved := len(h.saves)
+
+	fresh := ctl(h) // same host, same on-disk weights, empty engine state
+	r := run(t, fresh, 2)
+	if len(h.saves) != saved {
+		t.Fatalf("got %d saves after restart, want none: the weight had not moved", len(h.saves)-saved)
+	}
+	if r.Changed == 0 {
+		t.Fatal("the restarted engine must still propose the weight it has no record of")
+	}
+	if r.Wrote != 0 {
+		t.Fatalf("Wrote=%d, want 0: nothing reached the host", r.Wrote)
+	}
+}

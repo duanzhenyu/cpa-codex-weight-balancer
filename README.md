@@ -84,9 +84,11 @@ The status payload carries auth indices, states, weights and observed burn. It c
 no tokens, no credential JSON and no file names.
 
 `weights_pending` counts the weights the plugin wants to move; `weights_written` counts
-what the host confirmed. They differ when a save is rejected, and only the second one
-means the routing accumulator was actually wiped. A pending write stays pending — a
-rejected save is retried on the next cycle rather than being recorded as done.
+the saves that actually reached the host. Only the second one means the routing
+accumulator was wiped. They differ when a save is rejected, and after a restart: the
+plugin loses its record of what it wrote, re-proposes every weight, then finds each one
+already on disk and skips it — pending without written. A rejected save is retried on
+the next cycle rather than being recorded as done.
 
 ## Known limits
 
