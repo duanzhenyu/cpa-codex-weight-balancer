@@ -36,6 +36,9 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 
 	report := c.engine.Cycle(observations, now)
 	for _, decision := range report.Decisions {
+		if decision.Error != "" {
+			c.host.Log("warn", fmt.Sprintf("probe failed for %s: %s", decision.AuthID, decision.Error))
+		}
 		if !decision.Write {
 			continue
 		}

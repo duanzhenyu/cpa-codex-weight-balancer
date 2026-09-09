@@ -24,8 +24,12 @@ type Decision struct {
 	State    State
 	Weight   int64
 	Write    bool // the weight differs from the last one written back
-	Degraded bool // the 5h window was dropped from the min() gate
+	Degraded bool // the score is a bare percentage, not comparable across tiers
 	Burn     Burn
+	// Error is why this account carried no usable snapshot this cycle. A
+	// frozen account and one still warming up both report state=pending at
+	// weight 0, so without this they cannot be told apart.
+	Error string
 }
 
 // Report is one full cycle.
@@ -112,6 +116,9 @@ func (e *Engine) Cycle(obs []Observation, now time.Time) Report {
 		e.accounts[id] = next
 
 		d := Decision{AuthID: id, State: next.State, Weight: next.Weight, Degraded: rate.Degraded}
+		if err != nil {
+			d.Error = err.Error()
+		}
 		if err == nil {
 			if prev, ok := e.previous[id]; ok {
 				d.Burn = observedBurn(prev, o.Snapshot)

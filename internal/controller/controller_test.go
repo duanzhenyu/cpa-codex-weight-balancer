@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +15,9 @@ import (
 
 var now = time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 
-const usageBody = `{"rate_limits":{
-  "primary":{"used_percent":20,"window_minutes":300,"reset_after_seconds":7200},
-  "secondary":{"used_percent":45,"window_minutes":10080,"reset_after_seconds":400000}}}`
+const usageBody = `{"rate_limit":{
+  "primary_window":{"used_percent":20,"limit_window_seconds":18000,"reset_after_seconds":7200},
+  "secondary_window":{"used_percent":45,"limit_window_seconds":604800,"reset_after_seconds":400000}}}`
 
 type save struct {
 	Name string
@@ -35,6 +36,7 @@ type fakeHost struct {
 	saveErr  error
 	requests []HTTPRequest
 	gets     []string
+	logs     []string
 	// onGet fires before returning a credential, to simulate a concurrent write.
 	onGet func(authIndex string, call int)
 }
@@ -94,7 +96,7 @@ func (h *fakeHost) HTTPDo(req HTTPRequest) (HTTPResponse, error) {
 	return HTTPResponse{StatusCode: h.status, Body: []byte(h.usage)}, nil
 }
 
-func (h *fakeHost) Log(string, string) {}
+func (h *fakeHost) Log(level, message string) { h.logs = append(h.logs, level+": "+message) }
 
 func run(t *testing.T, c *Controller, times int) balancer.Report {
 	t.Helper()
@@ -202,9 +204,9 @@ func TestNonOKProbeIsTreatedAsFailure(t *testing.T) {
 
 func TestLimitReachedExcludesAccount(t *testing.T) {
 	h := newFakeHost()
-	h.usage = `{"rate_limits":{"limit_reached":true,
-	  "primary":{"used_percent":100,"window_minutes":300,"reset_after_seconds":600},
-	  "secondary":{"used_percent":10,"window_minutes":10080,"reset_after_seconds":400000}}}`
+	h.usage = `{"rate_limit":{"limit_reached":true,
+	  "primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_after_seconds":600},
+	  "secondary_window":{"used_percent":10,"limit_window_seconds":604800,"reset_after_seconds":400000}}}`
 	r := run(t, ctl(h), 2)
 	if r.Decisions[0].State != balancer.StateUnavailable || r.Decisions[0].Weight != 0 {
 		t.Fatalf("got %+v, want unavailable at weight 0", r.Decisions[0])
@@ -368,5 +370,30 @@ func TestReportCountsConfirmedWrites(t *testing.T) {
 	r2 := run(t, ctl(h2), 2)
 	if r2.Changed != 1 || r2.Wrote != 0 {
 		t.Fatalf("Changed=%d Wrote=%d, want 1 intended and 0 confirmed", r2.Changed, r2.Wrote)
+	}
+}
+
+func TestProbeFailureIsReportedNotSwallowed(t *testing.T) {
+	// A silently dropped probe error is indistinguishable from warmup: both
+	// show state=pending at weight 0. Without this the only way to tell an
+	// unreachable endpoint from a healthy first cycle is a packet capture.
+	h := newFakeHost()
+	h.status = 401
+	r := run(t, ctl(h), 2)
+	d := r.Decisions[0]
+	if d.Error == "" {
+		t.Fatalf("got %+v, want the probe failure reported", d)
+	}
+	if !strings.Contains(d.Error, "401") {
+		t.Fatalf("error %q does not say what went wrong", d.Error)
+	}
+	if !slices.ContainsFunc(h.logs, func(l string) bool { return strings.Contains(l, "401") }) {
+		t.Fatalf("probe failure was never logged: %v", h.logs)
+	}
+}
+
+func TestHealthyProbeReportsNoError(t *testing.T) {
+	if d := run(t, ctl(newFakeHost()), 2).Decisions[0]; d.Error != "" {
+		t.Fatalf("healthy cycle reported %q", d.Error)
 	}
 }

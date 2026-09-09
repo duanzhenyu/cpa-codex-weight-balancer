@@ -268,6 +268,9 @@ func (w *worker) status() map[string]any {
 		if d.Burn.Known {
 			row["observed_burn_per_hour"] = d.Burn.Rate * 3600
 		}
+		if d.Error != "" {
+			row["error"] = d.Error
+		}
 		if account, ok := accounts[d.AuthID]; ok {
 			row["stale"] = account.Stale
 			if account.Bucket.Set {
