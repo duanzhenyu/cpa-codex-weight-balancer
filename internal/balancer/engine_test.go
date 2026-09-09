@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/quota"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/quota"
 )
 
 func obsFor(id string, weeklyRem float64, weeklyIn time.Duration, fiveRem float64, fiveIn time.Duration, at time.Time) Observation {

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/balancer"
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/controller"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/balancer"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/controller"
 )
 
 func TestDecodeDefaults(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/quota"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/quota"
 )
 
 func pol() Policy { return DefaultPolicy() }

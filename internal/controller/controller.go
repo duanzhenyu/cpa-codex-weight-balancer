@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/balancer"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/balancer"
 )
 
 // UsageEndpoint is the Codex quota probe. It comes from the design research,

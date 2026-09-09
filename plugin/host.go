@@ -8,7 +8,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/controller"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/controller"
 )
 
 // hostBridge implements controller.Host on top of the host callbacks.

@@ -12,16 +12,20 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/balancer"
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/controller"
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/pluginconf"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/balancer"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/controller"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/pluginconf"
 )
 
 const (
 	pluginName    = "cpa-codex-weight-balancer"
 	pluginVersion = "0.1.0"
-	statusPath    = "/status"
-	refreshPath   = "/refresh"
+	// The host rejects a registration whose Author or GitHubRepository is
+	// blank, regardless of which capabilities it declares.
+	pluginAuthor = "dzy"
+	pluginRepo   = "https://github.com/duanzhenyu/cpa-codex-weight-balancer"
+	statusPath   = "/status"
+	refreshPath  = "/refresh"
 )
 
 var (
@@ -106,8 +110,10 @@ func pluginRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
-			Name:    pluginName,
-			Version: pluginVersion,
+			Name:             pluginName,
+			Version:          pluginVersion,
+			Author:           pluginAuthor,
+			GitHubRepository: pluginRepo,
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "interval", Type: pluginapi.ConfigFieldTypeString, Description: "Probe cadence, e.g. 15m. Each weight change wipes the host routing accumulator, so keep this in the tens of minutes."},
 				{Name: "endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "Codex usage probe URL."},

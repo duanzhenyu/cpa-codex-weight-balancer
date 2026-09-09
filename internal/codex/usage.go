@@ -14,7 +14,7 @@ import (
 	"slices"
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/quota"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/quota"
 )
 
 // Usage is one parsed rate-limit payload.

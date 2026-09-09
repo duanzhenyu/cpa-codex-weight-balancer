@@ -8,7 +8,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/balancer"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/balancer"
 )
 
 // call drives the plugin the way the host does, through the method dispatcher,
@@ -57,6 +57,19 @@ func TestRegisterAdvertisesTheHostContract(t *testing.T) {
 	}
 	if len(reg.Metadata.ConfigFields) == 0 {
 		t.Fatal("no config fields advertised")
+	}
+	// The host's validPlugin rejects the registration outright when any of
+	// these is blank, whatever capabilities it declares — the plugin then loads
+	// and is immediately discarded as "invalid metadata or no capabilities".
+	for field, value := range map[string]string{
+		"Name":             reg.Metadata.Name,
+		"Version":          reg.Metadata.Version,
+		"Author":           reg.Metadata.Author,
+		"GitHubRepository": reg.Metadata.GitHubRepository,
+	} {
+		if strings.TrimSpace(value) == "" {
+			t.Fatalf("metadata.%s is blank; the host rejects the registration", field)
+		}
 	}
 }
 

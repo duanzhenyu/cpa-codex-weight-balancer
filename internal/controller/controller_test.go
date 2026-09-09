@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/authfile"
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/balancer"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/authfile"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/balancer"
 )
 
 var now = time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)

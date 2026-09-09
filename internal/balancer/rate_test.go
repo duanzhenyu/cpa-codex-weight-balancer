@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/quota"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/quota"
 )
 
 var now = time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)

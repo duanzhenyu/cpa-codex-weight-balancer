@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/quota"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/quota"
 )
 
 // Burn is the consumption rate observed between two probes. It measures the

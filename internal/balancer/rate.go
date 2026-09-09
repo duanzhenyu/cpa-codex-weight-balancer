@@ -5,7 +5,7 @@ import (
 	"math"
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/quota"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/quota"
 )
 
 // Params tunes the urgency score. See doc §5.3.

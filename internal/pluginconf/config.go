@@ -10,8 +10,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/balancer"
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/controller"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/balancer"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/controller"
 )
 
 // DefaultInterval matches the design doc: tens of minutes, not every minute.

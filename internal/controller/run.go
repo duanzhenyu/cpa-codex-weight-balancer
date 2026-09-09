@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/authfile"
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/balancer"
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/codex"
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/quota"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/authfile"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/balancer"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/codex"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/quota"
 )
 
 func (c *Controller) run(now time.Time) (balancer.Report, error) {

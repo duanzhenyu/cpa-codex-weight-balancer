@@ -3,7 +3,7 @@ package balancer
 import (
 	"time"
 
-	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/quota"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/quota"
 )
 
 // State is where an account sits in the lifecycle of doc §5.4 constraint 2.

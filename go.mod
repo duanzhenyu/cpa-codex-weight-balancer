@@ -1,4 +1,4 @@
-module gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer
+module github.com/duanzhenyu/cpa-codex-weight-balancer
 
 go 1.26.0
 
