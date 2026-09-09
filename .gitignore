@@ -3,3 +3,9 @@ dist/
 *.dylib
 *.dll
 *.h
+
+# Local-only: operator notes and project instructions, not part of the release.
+CLAUDE.md
+调研结论与上架流程.md
+部署到本机CPA.md
+安装到其他CPA.md

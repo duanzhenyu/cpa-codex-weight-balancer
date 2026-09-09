@@ -115,9 +115,35 @@ the next cycle rather than being recorded as done.
   on the usage endpoint says the probe was throttled, not that the account cannot serve
   inference, so the last good weight is frozen rather than zeroed. There is no backoff:
   a persistently failing endpoint is re-probed every `interval`.
-- **The probe endpoint is unverified.** CPA parses this payload but never fetches it;
-  the URL comes from the design research. It is configurable for that reason — it must
-  be `https`, since every probe carries a bearer token. Run with `dry_run: true` first.
+- **The probe endpoint is Codex's to change.** The default URL and its payload shape
+  were verified against live accounts on 2026-09-09, but nothing contractual keeps them
+  stable, so the endpoint is configurable — and must be `https`, since every probe
+  carries a bearer token. Run with `dry_run: true` after any upgrade on either side.
+
+## Requirements
+
+- CLIProxyAPI built with plugin support — check for `X-Cpa-Support-Plugin: 1` on any
+  management response.
+- `routing.strategy: "weighted-round-robin"`. Under any other strategy the host never
+  reads the weights and this plugin does nothing.
+- Released binaries are `linux/amd64` and need **glibc ≥ 2.34**, measured inside the
+  container that runs CPA rather than on the Docker host. Other platforms and older
+  glibc must build from source.
+
+## Install
+
+From the plugin store: Management Center → Plugins → install `cpa-codex-weight-balancer`.
+
+Manually: download the zip and `checksums.txt` from
+[Releases](https://github.com/duanzhenyu/cpa-codex-weight-balancer/releases), run
+`sha256sum -c checksums.txt`, then unzip the `.so` into your `plugins.dir`, optionally
+under `<goos>/<goarch>/`. Do not rename it — the plugin ID is the library filename.
+Under Docker, `plugins.dir` must be an absolute path inside a mounted volume; the
+default `"plugins"` is relative to the container's working directory and does not
+survive a rebuild. Installing or replacing the library needs a restart — a config
+reload does not reload the library.
+
+Then enable it and give it a first, write-free run with `dry_run: true`.
 
 ## Build
 
@@ -128,3 +154,7 @@ make checksums
 ```
 
 Requires CGO. Cross-compiling needs a matching C toolchain per target.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

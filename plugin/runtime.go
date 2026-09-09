@@ -22,7 +22,7 @@ const (
 	pluginVersion = "0.1.0"
 	// The host rejects a registration whose Author or GitHubRepository is
 	// blank, regardless of which capabilities it declares.
-	pluginAuthor = "dzy"
+	pluginAuthor = "duanzhenyu"
 	pluginRepo   = "https://github.com/duanzhenyu/cpa-codex-weight-balancer"
 	statusPath   = "/status"
 	refreshPath  = "/refresh"
