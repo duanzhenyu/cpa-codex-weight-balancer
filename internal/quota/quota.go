@@ -1,0 +1,57 @@
+// Package quota models a point-in-time observation of one Codex account's
+// rate-limit windows. Remaining and ResetAt of a snapshot must originate from
+// the same probe response; see doc §5.3 "陈旧快照安全阀".
+package quota
+
+import (
+	"math"
+	"time"
+)
+
+// Window is one rate-limit window of an account.
+type Window struct {
+	// Remaining is the quota left in the window. Absolute reports whether it has
+	// been scaled by the account's plan capacity; when false it is a bare
+	// percentage, comparable between accounts only on the same window and only
+	// while every account is on the same plan tier.
+	Remaining float64
+	Absolute  bool
+	ResetAt   time.Time
+}
+
+// Snapshot is one atomic probe result for an account.
+type Snapshot struct {
+	AuthID     string
+	Generation uint64
+	ObservedAt time.Time
+	Weekly     Window
+	FiveHour   Window
+}
+
+// Expired reports whether the window has rolled over since it was observed,
+// which makes Remaining meaningless.
+func (w Window) Expired(now time.Time) bool { return !now.Before(w.ResetAt) }
+
+// Usable reports whether the window can be scored at all. Absolute is not
+// required: a bare percentage is comparable between accounts on the same
+// window, just not across windows or across plan tiers.
+func (w Window) Usable(now time.Time) bool {
+	if w.Expired(now) {
+		return false
+	}
+	return !math.IsInf(w.Remaining, 0) && w.Remaining >= 0
+}
+
+// Scaled multiplies both windows by the account's plan capacity, turning bare
+// percentages into a unit comparable across plan tiers. A non-positive capacity
+// leaves the snapshot as percentages.
+func (s Snapshot) Scaled(capacity float64) Snapshot {
+	if capacity <= 0 {
+		return s
+	}
+	for _, w := range []*Window{&s.Weekly, &s.FiveHour} {
+		w.Remaining *= capacity
+		w.Absolute = true
+	}
+	return s
+}

@@ -1,0 +1,99 @@
+// Package controller runs one probe-and-reweight cycle against the host.
+package controller
+
+import (
+	"strings"
+	"sync"
+	"time"
+
+	"gitlab.duanzhenyu.top/dzy/cpa-codex-weight-balancer/internal/balancer"
+)
+
+// UsageEndpoint is the Codex quota probe. It comes from the design research,
+// not from the CPA source tree — CPA parses this payload but never fetches it —
+// so it stays configurable.
+const UsageEndpoint = "https://chatgpt.com/backend-api/wham/usage"
+
+// Codex client identification, mirroring what the host sends on codex calls.
+const (
+	UserAgent  = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
+	Originator = "codex-tui"
+)
+
+// AuthEntry is one credential as the host lists it.
+type AuthEntry struct {
+	AuthIndex   string
+	Name        string
+	Type        string
+	Disabled    bool
+	Unavailable bool
+}
+
+// HTTPRequest is an outbound probe.
+type HTTPRequest struct {
+	Method  string
+	URL     string
+	Headers map[string][]string
+}
+
+// HTTPResponse is the probe result.
+type HTTPResponse struct {
+	StatusCode int
+	Body       []byte
+}
+
+// Host is the slice of the plugin host callbacks this controller needs.
+type Host interface {
+	AuthList() ([]AuthEntry, error)
+	AuthGet(authIndex string) (name string, raw []byte, err error)
+	AuthSave(name string, raw []byte) error
+	HTTPDo(req HTTPRequest) (HTTPResponse, error)
+	Log(level, message string)
+}
+
+// Options configures a controller.
+type Options struct {
+	Endpoint string
+	Policy   balancer.Policy
+	// Capacity scales a plan's percentages into a tier-comparable unit. Leave
+	// it at 0 to keep bare percentages, which are only sound when every account
+	// is on the same plan.
+	Capacity float64
+	// DryRun computes and reports weights without writing any back. Nothing is
+	// recorded as written either, so turning it off later still writes.
+	DryRun bool
+}
+
+// Controller owns the engine and the host wiring.
+type Controller struct {
+	host   Host
+	engine *balancer.Engine
+	opts   Options
+
+	// mu serializes cycles. The ticker and the management refresh route both
+	// call RunCycle, and two overlapping cycles would double-probe every
+	// account and interleave their write-backs.
+	mu         sync.Mutex
+	generation uint64
+}
+
+// New builds a controller.
+func New(h Host, o Options) *Controller {
+	if strings.TrimSpace(o.Endpoint) == "" {
+		o.Endpoint = UsageEndpoint
+	}
+	if o.Policy.Warmup <= 0 {
+		o.Policy = balancer.DefaultPolicy()
+	}
+	return &Controller{host: h, engine: balancer.NewEngine(o.Policy), opts: o}
+}
+
+// Engine exposes the engine for status rendering and persistence.
+func (c *Controller) Engine() *balancer.Engine { return c.engine }
+
+// RunCycle probes every Codex credential and writes back the weights that moved.
+func (c *Controller) RunCycle(now time.Time) (balancer.Report, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.run(now)
+}
