@@ -134,16 +134,17 @@ func (p Policy) freeze(a Account, now time.Time) Account {
 	return a
 }
 
-// recoverAt is the soonest reset that could lift the exclusion: the earliest
-// reset among the windows actually drained, or the next window boundary when
-// the account was excluded by the circuit breaker instead.
+// recoverAt is the reset that could lift the exclusion: the latest reset among
+// the windows actually drained, since every drained window must roll over
+// before the account can serve again. When no window is drained the account was
+// excluded by the circuit breaker, and the next boundary of any kind will do.
 func recoverAt(s quota.Snapshot, now time.Time) time.Time {
 	var at time.Time
 	for _, w := range [...]quota.Window{s.Weekly, s.FiveHour} {
 		if w.Remaining > 0 || w.Expired(now) {
 			continue
 		}
-		if at.IsZero() || w.ResetAt.Before(at) {
+		if at.IsZero() || w.ResetAt.After(at) {
 			at = w.ResetAt
 		}
 	}

@@ -87,6 +87,32 @@ func TestExhaustedWindowGoesUnavailable(t *testing.T) {
 	}
 }
 
+// With both windows drained the account cannot serve until the *last* of them
+// resets. Recovering at the soonest one re-admits an account whose weekly quota
+// is still empty, and while the probe stays down nothing corrects that.
+func TestBothWindowsDrainedRecoverAtTheLaterReset(t *testing.T) {
+	p := pol()
+	fiveReset, weeklyReset := 2*time.Hour, 40*time.Hour
+	a := warm(t, p, obsOK(win(0, weeklyReset), win(0, fiveReset)))
+	if a.State != StateUnavailable {
+		t.Fatalf("got %v, want unavailable", a.State)
+	}
+	if !a.RecoverAt.Equal(now.Add(weeklyReset)) {
+		t.Fatalf("RecoverAt %v, want the weekly reset %v", a.RecoverAt, now.Add(weeklyReset))
+	}
+}
+
+// The exclusion must still be held past the earlier window's reset.
+func TestBothWindowsDrainedStayExcludedAfterTheShortReset(t *testing.T) {
+	p := pol()
+	a := warm(t, p, obsOK(win(0, 40*time.Hour), win(0, 2*time.Hour)))
+	down := Observation{Snapshot: quota.Snapshot{AuthID: "a", Generation: 2}, Err: errors.New("probe failed")}
+	held := p.Step(a, down, now.Add(3*time.Hour))
+	if held.Weight != 0 || held.State != StateUnavailable {
+		t.Fatalf("weight %d state %v after the 5h reset, want the exclusion held", held.Weight, held.State)
+	}
+}
+
 func TestUnavailableRecoversAfterReset(t *testing.T) {
 	p := pol()
 	a := warm(t, p, obsOK(win(500, 7*24*time.Hour), win(0, 2*time.Hour)))
