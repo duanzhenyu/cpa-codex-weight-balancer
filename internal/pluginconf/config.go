@@ -149,7 +149,10 @@ func finite(v float64, field string) error {
 }
 
 // checkEndpoint refuses anything that would put a bearer token on the wire in
-// the clear or send it somewhere that cannot be a Codex API.
+// the clear. It does not restrict the host: the endpoint is configurable
+// precisely because Codex can move it, and pinning a hostname here would defeat
+// that. The operator therefore owns this value — whatever host it names
+// receives every account's access token.
 func checkEndpoint(raw string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil {
