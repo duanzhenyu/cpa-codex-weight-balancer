@@ -199,7 +199,7 @@ func TestRestoreNeedsTheWrittenWeightsToo(t *testing.T) {
 func TestCycleDegradedOnBarePercentage(t *testing.T) {
 	e := NewEngine(DefaultPolicy())
 	o := healthy("a", now)
-	o.Snapshot.Weekly.Absolute = false // percentage-only, not tier-comparable
+	o.Snapshot.Weekly.Absolute = false // percentage-only, not an absolute quantity
 	for range 2 {
 		e.Cycle([]Observation{o}, now)
 	}

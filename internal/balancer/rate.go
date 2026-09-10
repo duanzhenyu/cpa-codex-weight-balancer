@@ -32,9 +32,9 @@ type Rate struct {
 	// Blocked reports that the short window is spent, so the account cannot
 	// serve right now however much weekly quota it still holds.
 	Blocked bool
-	// Degraded reports that the score is not comparable across accounts,
-	// because the window is a bare percentage rather than a capacity-scaled
-	// value. Mixed plan tiers need per-account capacity to be meaningful.
+	// Degraded reports that the window is a bare percentage rather than an
+	// absolute quantity. Scaling it does not make plan tiers comparable — that
+	// needs per-account capacity — it only puts the score in a known unit.
 	Degraded bool
 }
 

@@ -24,7 +24,7 @@ type Decision struct {
 	State    State
 	Weight   int64
 	Write    bool // the weight differs from the last one written back
-	Degraded bool // the score is a bare percentage, not comparable across tiers
+	Degraded bool // the score is a bare percentage, not an absolute quantity
 	Burn     Burn
 	// Error is why this account carried no usable snapshot this cycle. A
 	// frozen account and one still warming up both report state=pending at

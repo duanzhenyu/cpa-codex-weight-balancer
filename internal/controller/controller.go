@@ -55,9 +55,10 @@ type Host interface {
 type Options struct {
 	Endpoint string
 	Policy   balancer.Policy
-	// Capacity scales a plan's percentages into a tier-comparable unit. Leave
-	// it at 0 to keep bare percentages, which are only sound when every account
-	// is on the same plan.
+	// Capacity expresses percentages and observed burn in one absolute unit. It
+	// is a single number for the whole fleet, so it does not make accounts on
+	// different plans comparable, and it does not change routing: the quantizer
+	// anchor moves with it.
 	Capacity float64
 	// DryRun computes and reports weights without writing any back. Nothing is
 	// recorded as written either, so turning it off later still writes.
@@ -84,6 +85,17 @@ func New(h Host, o Options) *Controller {
 	}
 	if o.Policy.Warmup <= 0 {
 		o.Policy = balancer.DefaultPolicy()
+	}
+	// Snapshot.Scaled rewrites Remaining into capacity units, and the quantizer
+	// anchor is documented in the same unit as Remaining. Leaving it behind
+	// shifts every bucket by one constant: a fleet-wide rewrite that changes no
+	// account's share, and a saturation onto one weight at a large capacity. An
+	// anchor that underflows keeps its old value, because a non-positive one
+	// divides the score by zero.
+	if o.Capacity > 0 {
+		if anchor := o.Policy.Quantizer.R0 / 100 * o.Capacity; anchor > 0 {
+			o.Policy.Quantizer.R0 = anchor
+		}
 	}
 	return &Controller{host: h, engine: balancer.NewEngine(o.Policy), opts: o}
 }

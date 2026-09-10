@@ -288,16 +288,24 @@ func TestAuthGetFailureIsPerAccount(t *testing.T) {
 	}
 }
 
-func TestCapacityScalingMarksComparable(t *testing.T) {
-	h := newFakeHost()
-	plain := New(h, Options{Policy: balancer.DefaultPolicy()})
-	if r := run(t, plain, 2); !r.Decisions[0].Degraded {
+// One capacity for the whole fleet carries no information about how accounts
+// differ, so switching it on may change the unit but must not change routing.
+// It does if the quantizer anchor stays in percentage units while Remaining
+// moves to capacity units: every bucket shifts by the same constant, which
+// rewrites the fleet for nothing and saturates it outright at a large capacity.
+func TestCapacityScalingIsRoutingNeutral(t *testing.T) {
+	plain := run(t, New(newFakeHost(), Options{Policy: balancer.DefaultPolicy()}), 2)
+	if !plain.Decisions[0].Degraded {
 		t.Fatal("bare percentages must report Degraded")
 	}
-	h2 := newFakeHost()
-	scaled := New(h2, Options{Policy: balancer.DefaultPolicy(), Capacity: 5000})
-	if r := run(t, scaled, 2); r.Decisions[0].Degraded {
-		t.Fatal("a capacity-scaled snapshot is comparable")
+	for _, capacity := range []float64{5000, 1e9} {
+		scaled := run(t, New(newFakeHost(), Options{Policy: balancer.DefaultPolicy(), Capacity: capacity}), 2)
+		if scaled.Decisions[0].Degraded {
+			t.Fatalf("capacity %v: a scaled snapshot is absolute, not degraded", capacity)
+		}
+		if got, want := scaled.Decisions[0].Weight, plain.Decisions[0].Weight; got != want {
+			t.Fatalf("capacity %v moved the weight from %d to %d", capacity, want, got)
+		}
 	}
 }
 
