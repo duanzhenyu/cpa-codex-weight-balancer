@@ -12,7 +12,8 @@ all: vet test build
 build:
 	@mkdir -p $(DIST)
 	CGO_ENABLED=1 GOOS=$(GOOS) GOARCH=$(GOARCH) \
-		go build -buildmode=c-shared -o $(DIST)/$(PLUGIN)$(EXT) ./plugin
+		go build -trimpath -ldflags="-s -w" -buildmode=c-shared \
+		-o $(DIST)/$(PLUGIN)$(EXT) ./plugin
 
 test:
 	go test ./...
