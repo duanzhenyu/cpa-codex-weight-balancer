@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 
 	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/balancer"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/controller"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/pluginconf"
 )
 
 // call drives the plugin the way the host does, through the method dispatcher,
@@ -148,8 +152,8 @@ func TestStatusCarriesNoCredentialMaterial(t *testing.T) {
 
 func TestReconfigureCarriesTheCommittedWeightsAcross(t *testing.T) {
 	// A config reload that drops either half re-prices every credential on the
-	// next cycle, and any weight change wipes the host's routing accumulator
-	// fleet-wide.
+	// next cycle, and a weight change can reset the host's routing credits.
+	// Interval is not a pricing input, so the committed state still applies.
 	configure(t, "interval: 15m")
 	engine := current.ctl.Engine()
 	engine.Restore(
@@ -169,17 +173,121 @@ func TestReconfigureCarriesTheCommittedWeightsAcross(t *testing.T) {
 	}
 }
 
+// Changing a pricing input invalidates the committed bucket — it is a
+// coordinate in the old scoring function — but nothing else. Dropping the whole
+// account drops the exclusion's recovery deadline with it, and freeze() needs
+// that deadline to re-admit an excluded credential while the probe is down.
+// Without it a config edit during an outage strands the account at weight 0,
+// which the host reads as a hard exclusion.
+func TestReconfigureInvalidatesBucketButKeepsRecoveryState(t *testing.T) {
+	recoverAt := time.Date(2026, 9, 12, 4, 0, 0, 0, time.UTC)
+	for _, reload := range []string{"interval: 15m\nalpha: 2", "interval: 15m\nbucket_q: 0.2", "interval: 15m\nt_floor: 45m"} {
+		func() {
+			configure(t, "interval: 15m\nalpha: 1")
+			current.ctl.Engine().Restore(
+				map[string]balancer.Account{"a": {
+					State:     balancer.StateUnavailable,
+					Weight:    0,
+					Bucket:    balancer.Bucket{Index: 3, Set: true},
+					LastGood:  recoverAt.Add(-40 * time.Hour),
+					RecoverAt: recoverAt,
+				}},
+				map[string]int64{"a": 0},
+			)
+			if env := call(t, pluginabi.MethodPluginReconfigure, lifecycleRequest{ConfigYAML: []byte(reload)}); !env.OK {
+				t.Fatalf("reconfigure rejected: %+v", env.Error)
+			}
+			got, ok := current.ctl.Engine().Accounts()["a"]
+			if !ok {
+				t.Fatalf("%q discarded the account's recovery state", reload)
+			}
+			if got.Bucket.Set {
+				t.Fatalf("%q reused a bucket from the old pricing: %+v", reload, got)
+			}
+			if got.State != balancer.StateUnavailable || got.Weight != 0 || !got.RecoverAt.Equal(recoverAt) {
+				t.Fatalf("%q lost the exclusion's recovery deadline: %+v", reload, got)
+			}
+			if written, okWritten := current.ctl.Engine().Written()["a"]; !okWritten || written != 0 {
+				t.Fatalf("%q lost the confirmed disk weight: %d present=%v", reload, written, okWritten)
+			}
+			stopRuntime()
+		}()
+	}
+}
+
+// A bucket index is a coordinate in the scoring function, so only the inputs
+// that move that coordinate may invalidate it. Treating an operational knob as
+// a pricing change re-commits every account on reload and rewrites the fleet;
+// hysteresis is the sharpest case, where clearing the bucket is precisely the
+// thing hysteresis exists to prevent.
+func TestSamePricingSeparatesScoringInputsFromOperationalKnobs(t *testing.T) {
+	base := decode(t, "interval: 15m")
+	for _, raw := range []string{
+		"interval: 20m",
+		"interval: 15m\ndry_run: true",
+		"interval: 15m\nwarmup: 5",
+		"interval: 15m\nfreshness: 2h",
+		"interval: 15m\nhysteresis: 0.8",
+		"interval: 15m\nendpoint: https://example.invalid/usage",
+		"interval: 15m\nquota_capacity: 5000",
+	} {
+		if !samePricing(base, decode(t, raw)) {
+			t.Fatalf("%q invalidated a still-valid bucket", raw)
+		}
+	}
+	for _, raw := range []string{
+		"interval: 15m\nalpha: 2",
+		"interval: 15m\nt_floor: 45m",
+		"interval: 15m\nbucket_q: 0.2",
+	} {
+		if samePricing(base, decode(t, raw)) {
+			t.Fatalf("%q kept a bucket from the old scoring function", raw)
+		}
+	}
+}
+
+func decode(t *testing.T, yaml string) pluginconf.Resolved {
+	t.Helper()
+	cfg, err := pluginconf.Decode([]byte(yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+// halt() blocks until the loop returns, so a cycle the loop should never have
+// started holds the reconfigure or shutdown that halted it — and a probe has no
+// overall deadline.
+func TestHaltedWorkerNeverStartsACycle(t *testing.T) {
+	cfg := decode(t, "interval: 15m")
+	w := &worker{
+		cfg:  cfg,
+		ctl:  controller.New(hostBridge{}, cfg.Options),
+		stop: make(chan struct{}),
+		done: make(chan struct{}),
+	}
+	close(w.stop)
+	w.loop()
+	if !w.lastRun.IsZero() {
+		t.Fatalf("a halted worker probed anyway at %s", w.lastRun)
+	}
+}
+
 func TestLifecycleIsSafeUnderConcurrentManagementCalls(t *testing.T) {
 	// The host may call these concurrently. Run with -race: a status render
 	// overlapping a refresh cycle used to touch the engine's maps unguarded.
 	configure(t, "interval: 15m")
 	var wg sync.WaitGroup
+	var reloads atomic.Uint64
 	start := make(chan struct{})
 	for _, work := range []func(){
 		func() { managementCall(t, "GET", pluginName+statusPath) },
 		func() { managementCall(t, "POST", pluginName+refreshPath) },
 		func() {
-			call(t, pluginabi.MethodPluginReconfigure, lifecycleRequest{ConfigYAML: []byte("interval: 15m")})
+			// Alternating intervals so each call actually replaces the worker:
+			// an unchanged config is now a no-op and would exercise nothing.
+			yaml := []string{"interval: 15m", "interval: 20m"}[reloads.Add(1)%2]
+			call(t, pluginabi.MethodPluginReconfigure, lifecycleRequest{ConfigYAML: []byte(yaml)})
 		},
 	} {
 		wg.Add(1)
@@ -224,4 +332,41 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func TestUnchangedConfigDoesNotRebuildTheWorker(t *testing.T) {
+	// The host calls reconfigure after every auth-file change, and that
+	// includes the plugin's own weight write-back. Rebuilding the worker there
+	// restarts the ticker, drops the burn baseline, and runs an extra full
+	// probe whose empty report overwrites the one that recorded the write —
+	// so the status route reports 0 pending, 0 written right after a real one.
+	configure(t, "interval: 15m")
+	before := current
+
+	if env := call(t, pluginabi.MethodPluginReconfigure, lifecycleRequest{ConfigYAML: []byte("interval: 15m")}); !env.OK {
+		t.Fatalf("reconfigure rejected: %+v", env.Error)
+	}
+	if current != before {
+		t.Fatal("an unchanged config must leave the running worker in place")
+	}
+	select {
+	case <-before.stop:
+		t.Fatal("an unchanged config must not halt the running ticker")
+	default:
+	}
+}
+
+func TestChangedConfigStillRebuildsTheWorker(t *testing.T) {
+	configure(t, "interval: 15m")
+	before := current
+
+	if env := call(t, pluginabi.MethodPluginReconfigure, lifecycleRequest{ConfigYAML: []byte("interval: 20m")}); !env.OK {
+		t.Fatalf("reconfigure rejected: %+v", env.Error)
+	}
+	if current == before {
+		t.Fatal("a changed config must replace the worker")
+	}
+	if current.cfg.Interval != 20*time.Minute {
+		t.Fatalf("interval %s, want 20m", current.cfg.Interval)
+	}
 }

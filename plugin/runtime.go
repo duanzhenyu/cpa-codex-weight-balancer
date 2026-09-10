@@ -131,6 +131,18 @@ func pluginRegistration() registration {
 	}
 }
 
+// samePricing reports whether a committed bucket is still a valid coordinate.
+// Only the inputs to Position and to the index-to-weight ladder qualify:
+// Margin decides when a bucket moves, not where it sits, and clearing a bucket
+// because hysteresis changed would bypass the very hysteresis being set.
+// Cadence, dry-run, warmup, freshness and the endpoint never enter a score, and
+// capacity scales the rate and the anchor by the same factor.
+func samePricing(a, b pluginconf.Resolved) bool {
+	x, y := a.Options.Policy, b.Options.Policy
+	x.Quantizer.Margin, y.Quantizer.Margin = 0, 0
+	return x.Params == y.Params && x.Quantizer == y.Quantizer
+}
+
 // reconfigure swaps in a new worker, carrying the engine's committed buckets
 // across so a config reload does not re-price every credential and wipe the
 // host's routing accumulator.
@@ -149,6 +161,14 @@ func reconfigure(request []byte) error {
 	mu.Lock()
 	defer mu.Unlock()
 
+	// The host reconfigures after every auth-file change, the plugin's own
+	// write-back included. Rebuilding on an unchanged config would restart the
+	// ticker, drop the burn baseline, and run an extra probe whose empty report
+	// buries the one that recorded the write.
+	if current != nil && current.cfg == cfg {
+		return nil
+	}
+
 	previous := current
 	if previous != nil {
 		previous.halt()
@@ -162,9 +182,18 @@ func reconfigure(request []byte) error {
 	if previous != nil {
 		// Both halves matter: Accounts keeps the committed buckets, Written
 		// keeps what is already on disk. Dropping either makes the first cycle
-		// after a reload rewrite every credential.
+		// after a reload rewrite every credential — and dropping Accounts also
+		// drops the deadline that re-admits an excluded credential while its
+		// probe is down, stranding it at the host's hard exclusion.
 		engine := previous.ctl.Engine()
-		next.ctl.Engine().Restore(engine.Accounts(), engine.Written())
+		accounts := engine.Accounts()
+		if !samePricing(previous.cfg, cfg) {
+			for id, account := range accounts {
+				account.Bucket = balancer.Bucket{}
+				accounts[id] = account
+			}
+		}
+		next.ctl.Engine().Restore(accounts, engine.Written())
 	}
 	current = next
 	go next.loop()
@@ -191,6 +220,14 @@ func (w *worker) halt() {
 
 func (w *worker) loop() {
 	defer close(w.done)
+	// halt() blocks on done, so a cycle started after the stop was signalled
+	// holds the reconfigure or shutdown that signalled it — for as long as a
+	// probe takes, and a probe has no overall deadline.
+	select {
+	case <-w.stop:
+		return
+	default:
+	}
 	ticker := time.NewTicker(w.cfg.Interval)
 	defer ticker.Stop()
 	w.cycle()
