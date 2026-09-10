@@ -22,6 +22,12 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 	names := make(map[string]string, len(entries))
 	observations := make([]balancer.Observation, 0, len(entries))
 	for _, entry := range entries {
+		// The host lists credentials at registration before it has assigned
+		// their runtime indices. Acting on one files its observation under the
+		// empty id, collapsing the fleet onto a phantom account.
+		if strings.TrimSpace(entry.AuthIndex) == "" {
+			continue
+		}
 		if !strings.EqualFold(strings.TrimSpace(entry.Type), "codex") || entry.Disabled {
 			continue
 		}
@@ -31,7 +37,9 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 			continue
 		}
 		names[entry.AuthIndex] = name
-		observations = append(observations, c.probe(entry.AuthIndex, raw, now))
+		observation := c.probe(entry.AuthIndex, raw, now)
+		observation.Disk = diskWeight(raw)
+		observations = append(observations, observation)
 	}
 
 	report := c.engine.Cycle(observations, now)
@@ -132,6 +140,15 @@ func (c *Controller) write(name, authIndex string, weight int64) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// diskWeight reports what the credential file holds right now. The probe
+// already has the bytes, so telling the engine costs nothing — and without it
+// the engine trusts its own record of what it wrote, which anything else may
+// have overwritten since.
+func diskWeight(raw []byte) balancer.DiskWeight {
+	weight, present := authfile.Weight(raw)
+	return balancer.DiskWeight{Weight: weight, Present: present, Read: true}
 }
 
 func failed(authIndex string, err error) balancer.Observation {

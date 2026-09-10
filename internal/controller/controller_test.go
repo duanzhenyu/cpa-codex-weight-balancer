@@ -211,8 +211,10 @@ func TestLimitReachedExcludesAccount(t *testing.T) {
 	if r.Decisions[0].State != balancer.StateUnavailable || r.Decisions[0].Weight != 0 {
 		t.Fatalf("got %+v, want unavailable at weight 0", r.Decisions[0])
 	}
-	if w, _ := authfile.Weight(h.files["a"]); w != 0 {
-		t.Fatalf("on-disk weight %d, want 0", w)
+	// The key must be present: weight 0 is the host's hard exclusion, while an
+	// absent weight is its default of 1 — the opposite of an exclusion.
+	if w, ok := authfile.Weight(h.files["a"]); !ok || w != 0 {
+		t.Fatalf("on-disk weight %d present=%v, want an explicit 0", w, ok)
 	}
 }
 
@@ -398,11 +400,11 @@ func TestHealthyProbeReportsNoError(t *testing.T) {
 	}
 }
 
-func TestRestartDoesNotClaimAnAccumulatorWipe(t *testing.T) {
-	// A restart loses the in-memory record of what was written, so the first
-	// warm cycle re-proposes every weight. The re-read then finds the value
-	// already on disk and skips the save. Counting that skip as a write makes
-	// accumulator_wiped lie in exactly the case it exists to answer.
+func TestRestartProposesNothingThatIsAlreadyOnDisk(t *testing.T) {
+	// A restart loses the in-memory record of what was written; the credential
+	// file supplies it again. Nothing is proposed and nothing is written, so
+	// neither weights_pending nor accumulator_wiped reports a move that was
+	// never going to happen.
 	h := newFakeHost()
 	run(t, ctl(h), 2)
 	if len(h.saves) != 1 {
@@ -415,10 +417,81 @@ func TestRestartDoesNotClaimAnAccumulatorWipe(t *testing.T) {
 	if len(h.saves) != saved {
 		t.Fatalf("got %d saves after restart, want none: the weight had not moved", len(h.saves)-saved)
 	}
-	if r.Changed == 0 {
-		t.Fatal("the restarted engine must still propose the weight it has no record of")
+	if r.Changed != 0 || r.Wrote != 0 {
+		t.Fatalf("Changed=%d Wrote=%d, want both 0: the weight was already on disk", r.Changed, r.Wrote)
+	}
+}
+
+func TestExternallyErasedWeightIsRestored(t *testing.T) {
+	// The credential was deleted and re-added through the management UI, so the
+	// new file carries no weight and the host routes it at its default of 1.
+	// The engine's own record still held the old value, which used to suppress
+	// the repair for the lifetime of the process.
+	h := newFakeHost()
+	c := ctl(h)
+	run(t, c, 2)
+	if len(h.saves) != 1 {
+		t.Fatalf("got %d saves in warmup, want 1", len(h.saves))
+	}
+	want, _ := authfile.Weight(h.saves[0].Raw)
+
+	h.files["a"] = []byte(`{"type":"codex","access_token":"tok","account_id":"acct-1"}`)
+	run(t, c, 1)
+
+	if len(h.saves) != 2 {
+		t.Fatalf("got %d saves, want the erased weight rewritten", len(h.saves))
+	}
+	got, ok := authfile.Weight(h.saves[1].Raw)
+	if !ok || got != want {
+		t.Fatalf("restored weight %d ok=%v, want %d", got, ok, want)
+	}
+}
+
+func TestSkippedSaveUnderARaceIsNotCountedAsWritten(t *testing.T) {
+	// The probe saw no weight, so the engine proposed one; by the time the
+	// write re-read the file someone else had already put that exact value
+	// there. Nothing reaches the host, so nothing may be reported as written —
+	// accumulator_wiped exists to answer precisely this.
+	h := newFakeHost()
+	c := ctl(h)
+	run(t, c, 2)
+	target := append([]byte(nil), h.files["a"]...)
+
+	h.files["a"] = []byte(`{"type":"codex","access_token":"tok","account_id":"acct-1"}`)
+	// Reads for "a": #1 and #2 were the warmup probes, #3 that cycle's write
+	// re-read. #4 is this cycle's probe, #5 its write re-read.
+	h.onGet = func(authIndex string, call int) {
+		if authIndex == "a" && call == 5 {
+			h.files["a"] = target
+		}
+	}
+	saved := len(h.saves)
+	r := run(t, c, 1)
+
+	if len(h.saves) != saved {
+		t.Fatalf("got %d extra saves, want none: the value was already there", len(h.saves)-saved)
+	}
+	if r.Changed != 1 {
+		t.Fatalf("Changed=%d, want 1: the erased weight was proposed", r.Changed)
 	}
 	if r.Wrote != 0 {
 		t.Fatalf("Wrote=%d, want 0: nothing reached the host", r.Wrote)
+	}
+}
+
+func TestSkipsEntriesWithoutAnAuthIndex(t *testing.T) {
+	// At registration the host lists credentials before it has assigned their
+	// runtime indices. Every probe of those fails with "auth_index is required",
+	// and each observation is filed under the empty id — so the whole fleet
+	// collapses onto one phantom account that no credential corresponds to.
+	h := newFakeHost()
+	h.entries = []AuthEntry{{Name: "a.json", Type: "codex"}}
+	r := run(t, ctl(h), 1)
+
+	if len(h.gets) != 0 || len(h.requests) != 0 {
+		t.Fatalf("got %d credential reads and %d probes, want none", len(h.gets), len(h.requests))
+	}
+	if len(r.Decisions) != 0 {
+		t.Fatalf("got %+v, want no decisions", r.Decisions)
 	}
 }

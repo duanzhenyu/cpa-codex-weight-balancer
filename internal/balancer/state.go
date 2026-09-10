@@ -40,6 +40,21 @@ type Observation struct {
 	Snapshot      quota.Snapshot
 	Err           error
 	CircuitBroken bool
+	// Disk is what the credential file held when it was read this cycle. The
+	// engine's own record of what it wrote is not authority: anything else may
+	// have rewritten the file since — a re-login, the management UI, another
+	// plugin — and a weight that vanished there is a credential the host is
+	// routing at its default of 1.
+	Disk DiskWeight
+}
+
+// DiskWeight is the tri-state result of looking for a weight in a credential
+// file. Read separates "the file said nothing" from "the file was never
+// opened"; collapsing them would rewrite the fleet whenever a read fails.
+type DiskWeight struct {
+	Weight  int64
+	Present bool // the file carried a weight key
+	Read    bool // the file was read this cycle
 }
 
 // Policy drives the state machine.

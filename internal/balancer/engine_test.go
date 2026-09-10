@@ -236,3 +236,74 @@ func TestCycleAndAccountsAreSafeInParallel(t *testing.T) {
 	close(start)
 	wg.Wait()
 }
+
+func warmed(t *testing.T, e *Engine) int64 {
+	t.Helper()
+	var weight int64
+	for range 2 {
+		weight = find(t, cycle(e, []Observation{healthy("a", now)}, now), "a").Weight
+	}
+	return weight
+}
+
+func TestCycleRewritesAfterTheWeightVanishesFromDisk(t *testing.T) {
+	// A credential deleted and re-added through the management UI comes back
+	// without a weight, so the host routes it at the default of 1. Memory still
+	// holds the last confirmed write, and used to suppress the repair forever.
+	e := NewEngine(DefaultPolicy())
+	want := warmed(t, e)
+
+	o := healthy("a", now)
+	o.Disk = DiskWeight{Read: true}
+	r := e.Cycle([]Observation{o}, now)
+
+	d := find(t, r, "a")
+	if !d.Write || d.Weight != want || r.Changed != 1 {
+		t.Fatalf("got %+v changed=%d, want weight %d rewritten", d, r.Changed, want)
+	}
+}
+
+func TestCycleRewritesWhenDiskDivergedFromMemory(t *testing.T) {
+	e := NewEngine(DefaultPolicy())
+	want := warmed(t, e)
+
+	o := healthy("a", now)
+	o.Disk = DiskWeight{Weight: want + 100, Present: true, Read: true}
+	r := e.Cycle([]Observation{o}, now)
+
+	d := find(t, r, "a")
+	if !d.Write || d.Weight != want || r.Changed != 1 {
+		t.Fatalf("got %+v changed=%d, want weight %d restored", d, r.Changed, want)
+	}
+}
+
+func TestCycleStaysQuietWhenDiskAlreadyMatches(t *testing.T) {
+	// The sparse-write guarantee: reconciling against disk must not turn every
+	// cycle into a write, which would wipe the host accumulator fleet-wide.
+	e := NewEngine(DefaultPolicy())
+	want := warmed(t, e)
+
+	o := healthy("a", now)
+	o.Disk = DiskWeight{Weight: want, Present: true, Read: true}
+	r := e.Cycle([]Observation{o}, now)
+
+	if d := find(t, r, "a"); d.Write || r.Changed != 0 {
+		t.Fatalf("got %+v changed=%d, want no write", d, r.Changed)
+	}
+}
+
+func TestCycleKeepsMemoryWhenTheFileWasNotRead(t *testing.T) {
+	// AuthGet failed, so nothing is known about the file this cycle. The last
+	// confirmed write stands: guessing would rewrite the whole fleet whenever
+	// the host is briefly unable to hand over credentials.
+	e := NewEngine(DefaultPolicy())
+	warmed(t, e)
+
+	o := healthy("a", now)
+	o.Disk = DiskWeight{}
+	r := e.Cycle([]Observation{o}, now)
+
+	if d := find(t, r, "a"); d.Write || r.Changed != 0 {
+		t.Fatalf("got %+v changed=%d, want no write", d, r.Changed)
+	}
+}

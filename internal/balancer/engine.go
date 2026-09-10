@@ -37,9 +37,13 @@ type Report struct {
 	Decisions []Decision
 	// Changed counts the weights the engine wants moved.
 	Changed int
-	// Wrote counts the ones the host confirmed. Only a confirmed write wipes
-	// the host's smooth-WRR accumulator for the whole fleet — see doc §5.4
-	// constraint 1 point 2, which is why the two are reported apart.
+	// Wrote counts the ones the host confirmed. A confirmed write is the only
+	// thing that can reset the host's smooth-WRR credits, but it does not
+	// always: the host compares only credentials present in both the old and
+	// the new weight vector, and that vector holds positive weights only, so a
+	// save dropping one to 0 removes it from the candidate set and resets
+	// nothing. The plugin cannot observe which happened, which is why it
+	// reports the two counts and claims nothing beyond them.
 	Wrote int
 }
 
@@ -105,6 +109,21 @@ func (e *Engine) Commit(authID string, weight int64) {
 	e.written[authID] = weight
 }
 
+// reconcile makes the file, not memory, the authority on what was written.
+// Without it a weight removed behind the plugin's back — a re-login, an edit in
+// the management UI — stays outstanding forever, because every later cycle sees
+// its own record and skips the repair.
+func (e *Engine) reconcile(id string, disk DiskWeight) {
+	if !disk.Read {
+		return
+	}
+	if disk.Present {
+		e.written[id] = disk.Weight
+		return
+	}
+	delete(e.written, id)
+}
+
 // Cycle folds one round of observations into new weights.
 func (e *Engine) Cycle(obs []Observation, now time.Time) Report {
 	e.mu.Lock()
@@ -112,6 +131,7 @@ func (e *Engine) Cycle(obs []Observation, now time.Time) Report {
 	rep := Report{Decisions: make([]Decision, 0, len(obs))}
 	for _, o := range obs {
 		id := o.Snapshot.AuthID
+		e.reconcile(id, o.Disk)
 		next, rate, err := e.Policy.evaluate(e.accounts[id], o, now)
 		e.accounts[id] = next
 
