@@ -117,7 +117,7 @@ func pluginRegistration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "interval", Type: pluginapi.ConfigFieldTypeString, Description: "探测间隔，例如 15m。每次权重变动都会清空宿主全队列的路由累加器，务必保持在几十分钟量级。最小 1m。"},
 				{Name: "endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "额度探测地址。必须是 https —— 每次探测都带着凭据的 access_token。留空则用默认的 Codex usage 端点。"},
-				{Name: "quota_capacity", Type: pluginapi.ConfigFieldTypeNumber, Description: "套餐总量，用于把 used_percent 换算成跨套餐可比的绝对值。所有账号同一套餐时留空即可。"},
+				{Name: "quota_capacity", Type: pluginapi.ConfigFieldTypeNumber, Description: "套餐总量，把 used_percent 与观测消耗换算成绝对单位。它是全队伍共用的一个值，不能让不同套餐变得可比，也不改变路由比例。"},
 				{Name: "alpha", Type: pluginapi.ConfigFieldTypeNumber, Description: "紧迫度指数。1 表示按周窗口的 deadline 匀速配速；0 表示只看剩余额度、不管刷新时间；大于 1 则更偏向快要刷新的账号。"},
 				{Name: "t_floor", Type: pluginapi.ConfigFieldTypeString, Description: "距刷新时间的下限，例如 15m。窗口即将关闭时防止分数发散。"},
 				{Name: "bucket_q", Type: pluginapi.ConfigFieldTypeNumber, Description: "单个权重档位的相对宽度，例如 0.08 表示每档相差 8%。需按探测噪声标定：太窄会导致每轮都改权重、反复清空累加器。"},
@@ -321,16 +321,15 @@ func (w *worker) status() map[string]any {
 	}
 
 	out := map[string]any{
-		"plugin":            pluginName,
-		"version":           pluginVersion,
-		"interval":          w.cfg.Interval.String(),
-		"dry_run":           w.cfg.DryRun,
-		"endpoint":          w.cfg.Options.Endpoint,
-		"weights_pending":   report.Changed,
-		"weights_written":   report.Wrote,
-		"credentials":       rows,
-		"accumulator_wiped": report.Wrote > 0,
-		"tier_comparable":   w.cfg.Options.Capacity > 0,
+		"plugin":          pluginName,
+		"version":         pluginVersion,
+		"interval":        w.cfg.Interval.String(),
+		"dry_run":         w.cfg.DryRun,
+		"endpoint":        w.cfg.Options.Endpoint,
+		"weights_pending": report.Changed,
+		"weights_written": report.Wrote,
+		"credentials":     rows,
+		"capacity_scaled": w.cfg.Options.Capacity > 0,
 	}
 	if !lastRun.IsZero() {
 		out["last_run"] = lastRun.Format(time.RFC3339)

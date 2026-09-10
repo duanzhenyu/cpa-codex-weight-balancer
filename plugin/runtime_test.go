@@ -137,6 +137,38 @@ func TestUnknownMethodAnswersWithAnEnvelope(t *testing.T) {
 	}
 }
 
+// The plugin cannot observe whether the host actually reset its smooth-WRR
+// credits. The host only resets them when a credential present in both the old
+// and new weight vectors changes value, and its vector holds positive weights
+// only — so a save that drops a credential to 0 removes it from the candidate
+// set and resets nothing. Reporting every confirmed save as a wipe was a claim
+// the plugin had no way to back, so the field is gone; weights_written is the
+// honest number.
+func TestStatusDoesNotClaimToKnowTheHostAccumulatorWasReset(t *testing.T) {
+	configure(t, "interval: 15m\ndry_run: true")
+	body := string(managementCall(t, "GET", pluginName+statusPath).Body)
+	if strings.Contains(body, "accumulator_wiped") {
+		t.Fatalf("status asserts an unobservable host state:\n%s", body)
+	}
+	if !strings.Contains(body, `"weights_written"`) {
+		t.Fatalf("status must still report what it did write:\n%s", body)
+	}
+}
+
+// One capacity for the whole fleet cannot establish that two credentials are on
+// the same plan, and the plugin never reads a plan tier. Reporting the setting
+// as a comparability verdict contradicts the documented limit.
+func TestStatusReportsTheCapacitySettingNotATierVerdict(t *testing.T) {
+	configure(t, "interval: 15m\nquota_capacity: 5000\ndry_run: true")
+	body := string(managementCall(t, "GET", pluginName+statusPath).Body)
+	if strings.Contains(body, "tier_comparable") {
+		t.Fatalf("status claims to have verified account tiers:\n%s", body)
+	}
+	if !strings.Contains(body, `"capacity_scaled": true`) {
+		t.Fatalf("status must report the observable capacity setting:\n%s", body)
+	}
+}
+
 func TestStatusCarriesNoCredentialMaterial(t *testing.T) {
 	configure(t, "interval: 15m\ndry_run: true")
 	body := string(managementCall(t, "GET", pluginName+statusPath).Body)
