@@ -29,11 +29,13 @@ type AuthEntry struct {
 	Unavailable bool
 }
 
-// HTTPRequest is an outbound probe.
+// HTTPRequest is one outbound call: the quota probe, or the inference request
+// that starts a dormant window.
 type HTTPRequest struct {
 	Method  string
 	URL     string
 	Headers map[string][]string
+	Body    []byte
 }
 
 // HTTPResponse is the probe result.
@@ -63,6 +65,12 @@ type Options struct {
 	// DryRun computes and reports weights without writing any back. Nothing is
 	// recorded as written either, so turning it off later still writes.
 	DryRun bool
+	// Kickstart spends one minimal inference request on a credential whose
+	// weekly window has never started. It is the only thing here that costs
+	// quota, so it stays off unless the operator asks for it.
+	Kickstart         bool
+	KickstartModel    string
+	KickstartCooldown time.Duration
 }
 
 // Controller owns the engine and the host wiring.
@@ -80,6 +88,8 @@ type Controller struct {
 	// observed collects the quota served requests reported since the last
 	// cycle, which spares those credentials a probe.
 	observed observations
+	// kicks remembers which dormant credentials have already been nudged.
+	kicks kickstarts
 }
 
 // New builds a controller.

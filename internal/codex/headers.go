@@ -31,7 +31,7 @@ func ParseHeaders(h http.Header, authID string, generation uint64, observedAt ti
 	if h == nil {
 		return Usage{}, fmt.Errorf("codex quota carries no usable rate-limit window")
 	}
-	snapshot, err := fold(
+	snapshot, dormant, err := fold(
 		headerWindow(h, headerPrimary),
 		headerWindow(h, headerSecondary),
 		authID, generation, observedAt,
@@ -41,6 +41,7 @@ func ParseHeaders(h http.Header, authID string, generation uint64, observedAt ti
 	}
 	return Usage{
 		Snapshot: snapshot,
+		Dormant:  dormant,
 		// A response that omits the flag says nothing about exhaustion, so an
 		// unparsable or absent value must read as false, never as blocked.
 		LimitReached: strings.EqualFold(strings.TrimSpace(h.Get(headerPrefix+"Limit-Reached")), "true"),

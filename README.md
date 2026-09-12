@@ -55,6 +55,36 @@ turning it on moves no weight. The status endpoint reports `capacity_scaled`, wh
 is the setting and not a verdict about plan tiers. Mixed Plus/Pro fleets stay
 unsupported.
 
+## Dormant accounts
+
+A Codex rate-limit window starts at the account's **first metered request**, not on a
+schedule. Until then the account reports a reset exactly one window away and keeps
+reporting it: the value slides with wall-clock instead of counting down. A quota probe
+does not start it — only inference does.
+
+Such a credential is scored forever as `remaining 1.0 / t = one whole window`, a constant.
+It can never accumulate the deadline urgency this plugin is built on, while every started
+account's `t` shrinks toward its reset. A started-but-idle account a day from its reset
+outranks a dormant one roughly sevenfold; the dormant one cannot get there at all.
+
+`kickstart: true` spends one minimal inference request on such a credential to start its
+clock, then leaves it to normal pricing. It is the only thing here that costs quota, so it
+is off by default, and `dry_run` suppresses it. So does a credential the host has marked
+unavailable, or one whose own quota says it is already rate limited. A credential is nudged
+at most once per `kickstart_cooldown`, booked on the attempt rather than on success — a
+request that fails in flight may still have been metered upstream — and that cooldown is
+carried across configuration reloads, which the host performs far more often than it is
+long. The credential is re-read immediately before the request, because the same cycle may
+have written a weight to it in between.
+
+Only the weekly budget can trigger this. When a payload carries no weekly window the short
+one is still promoted so the account can be priced, but a window that resets by itself
+every few hours is dormant half the time and paying to start it would recur forever.
+
+This does not move traffic. Weights only steer *new* sessions, so a warmed credential that
+receives no cold binding still expires its week unused — as it would have anyway, minus the
+chance to compete for one.
+
 ## Configuration
 
 ```yaml
@@ -71,6 +101,9 @@ plugins:
       warmup: 2              # good probes before taking over a weight
       freshness: 90m         # after this, a frozen weight is flagged stale
       quota_capacity: 0      # >0 puts quota and burn in one fleet-wide absolute unit
+      kickstart: false       # spend one request to start a dormant weekly window
+      kickstart_model: gpt-5.6-sol   # Codex rejects its own smaller models here
+      kickstart_cooldown: 1h # minimum 1m; bounds a nudge that never takes
       dry_run: false         # compute and report, write nothing
       # endpoint: https://chatgpt.com/backend-api/wham/usage   # must be https
 ```
@@ -113,6 +146,10 @@ re-price an account whose score sits where the old hysteresis band was holding i
 `observations_pending` counts the credentials that reported quota on a served request
 since the last cycle and will therefore be priced without a probe. It is the one signal
 that separates a usage hook the host never reaches from a fleet that is simply idle.
+
+`dormant_credentials` lists the auth indices whose weekly window has never started, and
+`kickstarts_sent` / `last_kickstart_error` separate "no dormant accounts" from "dormancy
+detected but every nudge is being rejected".
 
 ## Known limits
 
@@ -163,6 +200,15 @@ that separates a usage hook the host never reaches from a fleet that is simply i
   documented contract. A response that carries no usable window is dropped and that
   credential falls back to its probe, so the failure mode is a lost optimisation rather
   than a wrong weight.
+- **A kickstart cannot be confirmed from the response it gets.** Codex fills the quota
+  headers before metering the request that carries them, so the 200 answering a kickstart
+  still reports the window as dormant. The plugin therefore discards any usage-hook reading
+  that says dormant and probes that credential instead: the only way such a reading reaches
+  it is on a response whose own request has just started the window.
+- **The inference endpoint is not configurable.** `kickstart_model` is, because Codex
+  rejects its own smaller models there (`gpt-5.3-codex-spark` answers "not supported when
+  using Codex with a ChatGPT account"), but the URL is fixed to what CPA itself posts to. A
+  fleet pointed at a non-default Codex base URL gets a failed kickstart, which is inert.
 - **This is not a 429 circuit breaker.** Only responses the host actually served are
   read; a failed request is dropped even though its headers parse, because a 429
   answers with a spent window and pricing off that would write `weight: 0` — a hard

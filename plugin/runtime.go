@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +20,7 @@ import (
 
 const (
 	pluginName    = "cpa-codex-weight-balancer"
-	pluginVersion = "0.2.0"
+	pluginVersion = "0.3.0"
 	// The host rejects a registration whose Author or GitHubRepository is
 	// blank, regardless of which capabilities it declares.
 	pluginAuthor = "duanzhenyu"
@@ -130,6 +131,9 @@ func pluginRegistration() registration {
 				{Name: "hysteresis", Type: pluginapi.ConfigFieldTypeNumber, Description: "改变权重所需的超出量，以档位计，例如 0.35。数值越大越迟钝，写回越少。"},
 				{Name: "warmup", Type: pluginapi.ConfigFieldTypeInteger, Description: "接管权重前需要连续成功探测的次数。未达标前插件不碰该凭据的 weight 字段。"},
 				{Name: "freshness", Type: pluginapi.ConfigFieldTypeString, Description: "探测开始失败后，冻结的旧权重还能继续信任多久，例如 90m。超时后在状态页标记为 stale。"},
+				{Name: "kickstart", Type: pluginapi.ConfigFieldTypeBoolean, Description: "周额度窗口从未启动过的账号，是否自动发一个最小推理请求把计时点着。这是本插件唯一会消耗额度的动作，默认关闭，dry_run 时不执行。"},
+				{Name: "kickstart_model", Type: pluginapi.ConfigFieldTypeString, Description: "点火请求使用的模型。Codex 会拒绝自家更小的模型，留空则用默认的 gpt-5.6-sol。"},
+				{Name: "kickstart_cooldown", Type: pluginapi.ConfigFieldTypeString, Description: "同一账号两次点火的最短间隔，例如 1h，最小 1m。按尝试记账而非按成功——中途失败的请求可能已在上游计费。"},
 				{Name: "dry_run", Type: pluginapi.ConfigFieldTypeBoolean, Description: "空跑模式：照常探测并计算权重，但不写回任何凭据。首次部署建议开启。"},
 			},
 		},
@@ -200,6 +204,10 @@ func reconfigure(request []byte) error {
 			}
 		}
 		next.ctl.Engine().Restore(accounts, engine.Written())
+		// The cooldown is the only thing stopping a kickstart that never takes
+		// from re-billing the account every cycle, and the host reconfigures
+		// far more often than that cooldown is long.
+		next.ctl.RestoreKickstarts(previous.ctl.Kickstarts())
 	}
 	current = next
 	go next.loop()
@@ -299,6 +307,15 @@ func (w *worker) status() map[string]any {
 	lastRun, lastErr, report := w.lastRun, w.lastErr, w.lastRep
 	w.resultMu.Unlock()
 
+	kicks := w.ctl.Kickstarts()
+	dormant := make([]string, 0, len(kicks.Dormant))
+	for authIndex, isDormant := range kicks.Dormant {
+		if isDormant {
+			dormant = append(dormant, authIndex)
+		}
+	}
+	slices.Sort(dormant)
+
 	accounts := w.ctl.Engine().Accounts()
 	rows := make([]map[string]any, 0, len(report.Decisions))
 	for _, d := range report.Decisions {
@@ -341,6 +358,17 @@ func (w *worker) status() map[string]any {
 		// registered but never reached is otherwise indistinguishable from a
 		// fleet that happens to be idle.
 		"observations_pending": w.ctl.Pending(),
+		// Kickstart is the one thing here that spends quota, so its switch, its
+		// effective model and what it has actually done are all reportable.
+		"kickstart":       w.cfg.Options.Kickstart,
+		"kickstart_model": w.cfg.Options.KickstartModel,
+		"kickstarts_sent": kicks.Sent,
+	}
+	if len(dormant) > 0 {
+		out["dormant_credentials"] = dormant
+	}
+	if kicks.LastErr != "" {
+		out["last_kickstart_error"] = kicks.LastErr
 	}
 	if !lastRun.IsZero() {
 		out["last_run"] = lastRun.Format(time.RFC3339)

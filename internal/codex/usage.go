@@ -27,7 +27,13 @@ type Usage struct {
 	// LimitReached mirrors the upstream flag: the account is rate limited right
 	// now regardless of what the window percentages say.
 	LimitReached bool
-	PlanType     string
+	// Dormant reports that the weekly window has never started. Codex begins a
+	// window at the account's first metered request, and until then reports a
+	// reset exactly one window away — a value that slides with wall-clock
+	// instead of counting down, so the account is scored forever as though it
+	// had a whole week left to spend its budget.
+	Dormant  bool
+	PlanType string
 }
 
 // ParseUsage reads a Codex rate-limit payload. Windows are classified by
@@ -43,7 +49,7 @@ func ParseUsage(raw []byte, authID string, generation uint64, observedAt time.Ti
 		return Usage{}, fmt.Errorf("codex usage carries no rate_limit object")
 	}
 
-	snapshot, err := fold(
+	snapshot, dormant, err := fold(
 		pick(limits.Primary, limits.PrimaryCamel),
 		pick(limits.Secondary, limits.SecondaryCamel),
 		authID, generation, observedAt,
@@ -54,6 +60,7 @@ func ParseUsage(raw []byte, authID string, generation uint64, observedAt time.Ti
 	return Usage{
 		Snapshot:     snapshot,
 		LimitReached: limits.LimitReached || limits.LimitReachedCamel,
+		Dormant:      dormant,
 		PlanType:     first(doc.PlanType, doc.PlanTypeCamel),
 	}, nil
 }
@@ -61,7 +68,11 @@ func ParseUsage(raw []byte, authID string, generation uint64, observedAt time.Ti
 // fold classifies the account-wide windows by length and folds them into a
 // snapshot. Both transports — the probe body and the response headers — carry
 // the same two windows under the same rules, so the validation lives here once.
-func fold(primary, secondary *windowDoc, authID string, generation uint64, observedAt time.Time) (quota.Snapshot, error) {
+//
+// It also reports whether the weekly budget is dormant. Only the longest window
+// is asked: the short one restarts on its own every few hours, so its state
+// says nothing about whether the account's week has begun.
+func fold(primary, secondary *windowDoc, authID string, generation uint64, observedAt time.Time) (quota.Snapshot, bool, error) {
 	var windows []sizedWindow
 	for _, w := range []*windowDoc{primary, secondary} {
 		if parsed, ok := w.window(observedAt); ok {
@@ -69,23 +80,33 @@ func fold(primary, secondary *windowDoc, authID string, generation uint64, obser
 		}
 	}
 	if len(windows) == 0 {
-		return quota.Snapshot{}, fmt.Errorf("codex quota carries no usable rate-limit window")
+		return quota.Snapshot{}, false, fmt.Errorf("codex quota carries no usable rate-limit window")
 	}
 	slices.SortFunc(windows, func(a, b sizedWindow) int { return cmp.Compare(a.span, b.span) })
 
+	weekly := windows[len(windows)-1]
 	s := quota.Snapshot{
 		AuthID:     authID,
 		Generation: generation,
 		ObservedAt: observedAt,
-		Weekly:     windows[len(windows)-1].window,
+		Weekly:     weekly.window,
 	}
 	// With a single window there is nothing shorter to gate on, and the zero
 	// value reads as Expired — never as exhausted — so it cannot block.
 	if len(windows) > 1 {
 		s.FiveHour = windows[0].window
 	}
-	return s, nil
+	// Only the weekly budget can justify a paid kickstart. fold still promotes
+	// a lone short window so the account can be priced, but a window that
+	// restarts on its own every few hours is dormant half the time, and paying
+	// to start it would recur for as long as the weekly peer stays missing.
+	return s, weekly.dormant && weekly.span >= minDormantSpan, nil
 }
+
+// minDormantSpan separates a budget worth spending a request to start from one
+// that rolls over by itself. Codex's two windows are five hours and a week, so
+// anything in between resolves the same way.
+const minDormantSpan = 24 * 60 * 60
 
 type usageDoc struct {
 	RateLimit      *limitsDoc `json:"rate_limit"`
@@ -126,6 +147,9 @@ const maxResetSeconds = 400 * 24 * 60 * 60
 type sizedWindow struct {
 	window quota.Window
 	span   int64
+	// dormant reports a window that has never started: nothing spent, and a
+	// reset exactly one span away.
+	dormant bool
 }
 
 // window validates one rate-limit window: a usable one needs a percentage in
@@ -149,7 +173,12 @@ func (w *windowDoc) window(observedAt time.Time) (sizedWindow, bool) {
 	default:
 		return sizedWindow{}, false
 	}
-	return sizedWindow{quota.Window{Remaining: 100 - *used, ResetAt: resetAt}, *span}, true
+	// Dormancy is read from the relative reset only. reset_at is an absolute
+	// instant, so measuring the span against it would compare our clock with
+	// Codex's and call any account with a full week left dormant.
+	after := pick(w.ResetAfter, w.ResetAfterCamel)
+	dormant := *used == 0 && after != nil && *after == *span
+	return sizedWindow{quota.Window{Remaining: 100 - *used, ResetAt: resetAt}, *span, dormant}, true
 }
 
 func pick[T any](a, b *T) *T {

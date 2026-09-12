@@ -36,6 +36,11 @@ type Config struct {
 	Warmup        *int     `yaml:"warmup"`
 	Freshness     string   `yaml:"freshness"`
 	DryRun        bool     `yaml:"dry_run"`
+	// Kickstart is the only setting that spends quota, so it is a plain bool
+	// with no pointer games: absent must mean off.
+	Kickstart         bool   `yaml:"kickstart"`
+	KickstartModel    string `yaml:"kickstart_model"`
+	KickstartCooldown string `yaml:"kickstart_cooldown"`
 }
 
 // Resolved is a validated configuration.
@@ -60,7 +65,6 @@ func Decode(raw []byte) (Resolved, error) {
 	out := Resolved{Interval: DefaultInterval, DryRun: cfg.DryRun}
 	out.Options.Endpoint = controller.UsageEndpoint
 	out.Options.DryRun = cfg.DryRun
-
 	interval, err := duration(cfg.Interval, DefaultInterval, "interval")
 	if err != nil {
 		return Resolved{}, err
@@ -76,6 +80,21 @@ func Decode(raw []byte) (Resolved, error) {
 		}
 		out.Options.Endpoint = endpoint
 	}
+	out.Options.Kickstart = cfg.Kickstart
+	out.Options.KickstartModel = controller.DefaultKickstartModel
+	if model := strings.TrimSpace(cfg.KickstartModel); model != "" {
+		out.Options.KickstartModel = model
+	}
+	if out.Options.KickstartCooldown, err = duration(cfg.KickstartCooldown, controller.DefaultKickstartCooldown, "kickstart_cooldown"); err != nil {
+		return Resolved{}, err
+	}
+	// Dormancy normally clears itself on the next cycle, so this floor only
+	// governs a kickstart that answers 200 and starts nothing. Left unfloored,
+	// that case bills the account once per cycle forever.
+	if out.Options.KickstartCooldown < MinInterval {
+		return Resolved{}, fmt.Errorf("kickstart_cooldown %s is below the %s floor: a shorter one re-bills an account whose window refuses to start", out.Options.KickstartCooldown, MinInterval)
+	}
+
 	if cfg.QuotaCapacity != nil {
 		if err = finite(*cfg.QuotaCapacity, "quota_capacity"); err != nil {
 			return Resolved{}, err

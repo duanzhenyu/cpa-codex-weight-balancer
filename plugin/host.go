@@ -63,11 +63,7 @@ func (h hostBridge) AuthSave(name string, raw []byte) error {
 }
 
 func (h hostBridge) HTTPDo(req controller.HTTPRequest) (controller.HTTPResponse, error) {
-	result, err := callHost(pluginabi.MethodHostHTTPDo, map[string]any{
-		"method":  req.Method,
-		"url":     req.URL,
-		"headers": req.Headers,
-	})
+	result, err := callHost(pluginabi.MethodHostHTTPDo, httpDoPayload(req))
 	if err != nil {
 		return controller.HTTPResponse{}, err
 	}
@@ -79,6 +75,21 @@ func (h hostBridge) HTTPDo(req controller.HTTPRequest) (controller.HTTPResponse,
 		return controller.HTTPResponse{}, fmt.Errorf("decode host.http.do: %w", err)
 	}
 	return controller.HTTPResponse{StatusCode: resp.StatusCode, Body: resp.Body}, nil
+}
+
+// httpDoPayload shapes one outbound call for the host. The body is omitted
+// rather than sent empty: the probe has none, and the host decodes this field
+// into a []byte it hands straight to its HTTP client.
+func httpDoPayload(req controller.HTTPRequest) map[string]any {
+	payload := map[string]any{
+		"method":  req.Method,
+		"url":     req.URL,
+		"headers": req.Headers,
+	}
+	if len(req.Body) > 0 {
+		payload["body"] = req.Body
+	}
+	return payload
 }
 
 // Log never carries credential material: the message is composed from auth

@@ -25,18 +25,22 @@ type save struct {
 }
 
 type fakeHost struct {
-	entries  []AuthEntry
-	files    map[string][]byte // authIndex -> credential JSON
-	names    map[string]string // authIndex -> file name
-	usage    string
-	status   int
-	httpErr  error
-	getErr   map[string]error
-	saves    []save
-	saveErr  error
-	requests []HTTPRequest
-	gets     []string
-	logs     []string
+	entries []AuthEntry
+	files   map[string][]byte // authIndex -> credential JSON
+	names   map[string]string // authIndex -> file name
+	usage   string
+	status  int
+	httpErr error
+	getErr  map[string]error
+	saves   []save
+	saveErr error
+	// kickStatus and kickErr answer the inference request, which has its own
+	// failure modes: the probe can be healthy while a kickstart is rejected.
+	kickStatus int
+	kickErr    error
+	requests   []HTTPRequest
+	gets       []string
+	logs       []string
 	// onGet fires before returning a credential, to simulate a concurrent write.
 	onGet func(authIndex string, call int)
 }
@@ -90,10 +94,32 @@ func (h *fakeHost) AuthSave(name string, raw []byte) error {
 
 func (h *fakeHost) HTTPDo(req HTTPRequest) (HTTPResponse, error) {
 	h.requests = append(h.requests, req)
+	if req.Method == "POST" {
+		if h.kickErr != nil {
+			return HTTPResponse{}, h.kickErr
+		}
+		status := h.kickStatus
+		if status == 0 {
+			status = 200
+		}
+		return HTTPResponse{StatusCode: status}, nil
+	}
 	if h.httpErr != nil {
 		return HTTPResponse{}, h.httpErr
 	}
 	return HTTPResponse{StatusCode: h.status, Body: []byte(h.usage)}, nil
+}
+
+// byMethod isolates one transport's calls: a cycle that kickstarts issues both
+// a probe and an inference request.
+func (h *fakeHost) byMethod(method string) []HTTPRequest {
+	var out []HTTPRequest
+	for _, r := range h.requests {
+		if r.Method == method {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (h *fakeHost) Log(level, message string) { h.logs = append(h.logs, level+": "+message) }
