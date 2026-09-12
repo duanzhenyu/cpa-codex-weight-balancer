@@ -19,6 +19,7 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 		return balancer.Report{}, fmt.Errorf("list credentials: %w", err)
 	}
 
+	observed := c.observed.drain()
 	names := make(map[string]string, len(entries))
 	observations := make([]balancer.Observation, 0, len(entries))
 	for _, entry := range entries {
@@ -37,7 +38,7 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 			continue
 		}
 		names[entry.AuthIndex] = name
-		observation := c.probe(entry.AuthIndex, raw, now)
+		observation := c.price(entry.AuthIndex, raw, observed, now)
 		observation.Disk = diskWeight(raw)
 		observations = append(observations, observation)
 	}
@@ -70,6 +71,28 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 	return report, nil
 }
 
+// price turns one credential into an observation, preferring the quota a
+// request the host already served reported over spending a probe on it. Only a
+// credential nothing has used since the last cycle is probed, and staleness
+// there is self-limiting: an account quiet enough to have no fresh reading is
+// also one whose windows have barely moved.
+func (c *Controller) price(authIndex string, raw []byte, observed map[string]codex.Usage, now time.Time) balancer.Observation {
+	if usage, ok := observed[authIndex]; ok {
+		// A cycle reads its clock before it drains, so a record that landed in
+		// between is stamped after this cycle's now and Compute rejects it as
+		// observed in the future — freezing an account that just reported
+		// perfectly good quota. Clamping loses nothing a deadline depends on:
+		// every reset in the snapshot is an absolute instant. It does shorten
+		// the interval the engine divides by for the observed burn rate, but
+		// only by the width of one drain.
+		if usage.Snapshot.ObservedAt.After(now) {
+			usage.Snapshot.ObservedAt = now
+		}
+		return c.observation(usage)
+	}
+	return c.probe(authIndex, raw, now)
+}
+
 // probe fetches and parses one account's quota. Every failure path yields a
 // frozen observation rather than an error: one unreachable account must not
 // stop the fleet from being repriced.
@@ -96,14 +119,22 @@ func (c *Controller) probe(authIndex string, raw []byte, now time.Time) balancer
 		return failed(authIndex, fmt.Errorf("usage probe returned %d", resp.StatusCode))
 	}
 
-	c.generation++
-	usage, err := codex.ParseUsage(resp.Body, authIndex, c.generation, now)
+	usage, err := codex.ParseUsage(resp.Body, authIndex, 0, now)
 	if err != nil {
 		return failed(authIndex, err)
 	}
+	return c.observation(usage)
+}
+
+// observation stamps a parsed quota with this cycle's generation and puts it in
+// the fleet's unit. Both transports pass through here so a header-fed account
+// and a probed one are scored on the same axis.
+func (c *Controller) observation(u codex.Usage) balancer.Observation {
+	c.generation++
+	u.Snapshot.Generation = c.generation
 	return balancer.Observation{
-		Snapshot:      usage.Snapshot.Scaled(c.opts.Capacity),
-		CircuitBroken: usage.LimitReached,
+		Snapshot:      u.Snapshot.Scaled(c.opts.Capacity),
+		CircuitBroken: u.LimitReached,
 	}
 }
 

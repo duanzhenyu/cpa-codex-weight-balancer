@@ -43,36 +43,48 @@ func ParseUsage(raw []byte, authID string, generation uint64, observedAt time.Ti
 		return Usage{}, fmt.Errorf("codex usage carries no rate_limit object")
 	}
 
-	var windows []sizedWindow
-	for _, w := range []*windowDoc{
+	snapshot, err := fold(
 		pick(limits.Primary, limits.PrimaryCamel),
 		pick(limits.Secondary, limits.SecondaryCamel),
-	} {
+		authID, generation, observedAt,
+	)
+	if err != nil {
+		return Usage{}, err
+	}
+	return Usage{
+		Snapshot:     snapshot,
+		LimitReached: limits.LimitReached || limits.LimitReachedCamel,
+		PlanType:     first(doc.PlanType, doc.PlanTypeCamel),
+	}, nil
+}
+
+// fold classifies the account-wide windows by length and folds them into a
+// snapshot. Both transports — the probe body and the response headers — carry
+// the same two windows under the same rules, so the validation lives here once.
+func fold(primary, secondary *windowDoc, authID string, generation uint64, observedAt time.Time) (quota.Snapshot, error) {
+	var windows []sizedWindow
+	for _, w := range []*windowDoc{primary, secondary} {
 		if parsed, ok := w.window(observedAt); ok {
 			windows = append(windows, parsed)
 		}
 	}
 	if len(windows) == 0 {
-		return Usage{}, fmt.Errorf("codex usage carries no usable rate-limit window")
+		return quota.Snapshot{}, fmt.Errorf("codex quota carries no usable rate-limit window")
 	}
 	slices.SortFunc(windows, func(a, b sizedWindow) int { return cmp.Compare(a.span, b.span) })
 
-	u := Usage{
-		Snapshot: quota.Snapshot{
-			AuthID:     authID,
-			Generation: generation,
-			ObservedAt: observedAt,
-			Weekly:     windows[len(windows)-1].window,
-		},
-		LimitReached: limits.LimitReached || limits.LimitReachedCamel,
-		PlanType:     first(doc.PlanType, doc.PlanTypeCamel),
+	s := quota.Snapshot{
+		AuthID:     authID,
+		Generation: generation,
+		ObservedAt: observedAt,
+		Weekly:     windows[len(windows)-1].window,
 	}
 	// With a single window there is nothing shorter to gate on, and the zero
 	// value reads as Expired — never as exhausted — so it cannot block.
 	if len(windows) > 1 {
-		u.Snapshot.FiveHour = windows[0].window
+		s.FiveHour = windows[0].window
 	}
-	return u, nil
+	return s, nil
 }
 
 type usageDoc struct {

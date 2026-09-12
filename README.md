@@ -5,9 +5,16 @@ credential weights in step with each account's remaining weekly quota **and how 
 that quota expires**, so the host's `weighted-round-robin` selector spreads new sessions
 across accounts instead of draining one at a time — without touching session affinity.
 
-The plugin never takes part in per-request selection. It declares only
-`management_api`, runs on a timer, and writes the `weight` field back into each
+The plugin never takes part in per-request selection. It declares `management_api` and
+`usage_plugin`, runs on a timer, and writes the `weight` field back into each
 credential. Routing stays entirely with the host, so `session-affinity` keeps working.
+
+`usage_plugin` subscribes to the host's usage records, which carry the upstream response
+headers. Codex reports the same two account-wide windows there that the probe fetches,
+so a credential that served a request since the last cycle is priced from that reading
+instead of costing a probe. The host dispatches those records from its own queue, so
+this is not on the request path, and the hook never writes a weight — weights still move
+only on the timer.
 
 ## Why time-to-reset, not just remaining quota
 
@@ -102,6 +109,10 @@ A restart re-reads each credential's weight from disk, so a value already at its
 is not proposed. Buckets are not persisted, though, so a restart can still legitimately
 re-price an account whose score sits where the old hysteresis band was holding it.
 
+`observations_pending` counts the credentials that reported quota on a served request
+since the last cycle and will therefore be priced without a probe. It is the one signal
+that separates a usage hook the host never reaches from a fleet that is simply idle.
+
 ## Known limits
 
 - **Session affinity caps the leverage.** A binding hit never reaches weighted
@@ -141,6 +152,25 @@ re-price an account whose score sits where the old hysteresis band was holding i
   were verified against live accounts on 2026-09-09, but nothing contractual keeps them
   stable, so the endpoint is configurable — and must be `https`, since every probe
   carries a bearer token. Run with `dry_run: true` after any upgrade on either side.
+- **A header reading can be up to one cycle older than a probe would be.** An account is
+  priced from the last response it served, not from the moment the cycle runs. The
+  staleness is self-limiting rather than bounded: a credential quiet enough to have no
+  recent reading is also one whose windows have barely moved. An idle credential is
+  probed as before.
+- **The response headers are Codex's to change too.** `X-Codex-Primary/Secondary-*` was
+  captured from live traffic on 2026-09-12 and CPA retains it verbatim, but it is not a
+  documented contract. A response that carries no usable window is dropped and that
+  credential falls back to its probe, so the failure mode is a lost optimisation rather
+  than a wrong weight.
+- **This is not a 429 circuit breaker.** Only responses the host actually served are
+  read; a failed request is dropped even though its headers parse, because a 429
+  answers with a spent window and pricing off that would write `weight: 0` — a hard
+  exclusion that evicts bound sticky sessions — at request rate rather than on the
+  timer. The account is excluded on the next cycle if the probe agrees it is out.
+  Instant exclusion on 429 is the host's own job (`Quota.Exceeded` plus the affinity
+  selector's reselect); note that the host derives the *recovery* time from
+  `Retry-After` or blind exponential backoff capped at 30 minutes, and never from the
+  `Reset-After-Seconds` sitting in that same response.
 
 ## Requirements
 

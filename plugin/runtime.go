@@ -58,6 +58,10 @@ type registration struct {
 
 type capabilities struct {
 	ManagementAPI bool `json:"management_api"`
+	// UsagePlugin subscribes to the host's usage records, which carry the
+	// upstream response headers. The host dispatches them from its own queue,
+	// so this hook is not on the request path.
+	UsagePlugin bool `json:"usage_plugin"`
 }
 
 type managementRegistration struct {
@@ -101,6 +105,8 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		}})
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)
+	case pluginabi.MethodUsageHandle:
+		return handleUsage(request)
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -127,7 +133,7 @@ func pluginRegistration() registration {
 				{Name: "dry_run", Type: pluginapi.ConfigFieldTypeBoolean, Description: "空跑模式：照常探测并计算权重，但不写回任何凭据。首次部署建议开启。"},
 			},
 		},
-		Capabilities: capabilities{ManagementAPI: true},
+		Capabilities: capabilities{ManagementAPI: true, UsagePlugin: true},
 	}
 }
 
@@ -330,6 +336,11 @@ func (w *worker) status() map[string]any {
 		"weights_written": report.Wrote,
 		"credentials":     rows,
 		"capacity_scaled": w.cfg.Options.Capacity > 0,
+		// Credentials that reported quota on a served request since the last
+		// cycle and will therefore be priced without a probe. A hook that is
+		// registered but never reached is otherwise indistinguishable from a
+		// fleet that happens to be idle.
+		"observations_pending": w.ctl.Pending(),
 	}
 	if !lastRun.IsZero() {
 		out["last_run"] = lastRun.Format(time.RFC3339)

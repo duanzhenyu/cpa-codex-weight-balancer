@@ -76,6 +76,10 @@ type Controller struct {
 	// account and interleave their write-backs.
 	mu         sync.Mutex
 	generation uint64
+
+	// observed collects the quota served requests reported since the last
+	// cycle, which spares those credentials a probe.
+	observed observations
 }
 
 // New builds a controller.
