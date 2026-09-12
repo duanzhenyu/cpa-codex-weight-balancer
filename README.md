@@ -49,10 +49,11 @@ Therefore:
 Percentages are comparable *between accounts on the same window* only while every
 account is on the same plan. `quota_capacity` is a single fleet-wide number: it puts
 quota and observed burn in an absolute unit, but it cannot make accounts on different
-plans comparable — that needs per-account capacity, which 0.1.0 does not model. It does
-not change routing either; the quantizer anchor scales with it, so turning it on moves
-no weight. The status endpoint reports `capacity_scaled`, which is the setting and not
-a verdict about plan tiers. Mixed Plus/Pro fleets stay unsupported.
+plans comparable — that needs per-account capacity, which this version does not
+model. It does not change routing either; the quantizer anchor scales with it, so
+turning it on moves no weight. The status endpoint reports `capacity_scaled`, which
+is the setting and not a verdict about plan tiers. Mixed Plus/Pro fleets stay
+unsupported.
 
 ## Configuration
 
@@ -191,7 +192,7 @@ Manually: download the zip and `checksums.txt` from
 `sha256sum -c checksums.txt`, then unzip the `.so` into your `plugins.dir`, optionally
 under `<goos>/<goarch>/`. The plugin ID is the filename minus the extension and an
 optional `-v<version>` suffix, so `cpa-codex-weight-balancer.so` and
-`cpa-codex-weight-balancer-v0.1.0.so` both work — anything else renames the plugin.
+`cpa-codex-weight-balancer-v0.2.0.so` both work — anything else renames the plugin.
 Under Docker, put `plugins.dir` on a mounted volume: the default `"plugins"` is
 relative to the container's working directory, which does not survive a rebuild.
 Overwriting a library already loaded at the same path needs a restart.
