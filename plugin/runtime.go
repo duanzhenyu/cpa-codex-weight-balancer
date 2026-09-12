@@ -20,7 +20,7 @@ import (
 
 const (
 	pluginName    = "cpa-codex-weight-balancer"
-	pluginVersion = "0.3.0"
+	pluginVersion = "0.4.0"
 	// The host rejects a registration whose Author or GitHubRepository is
 	// blank, regardless of which capabilities it declares.
 	pluginAuthor = "duanzhenyu"
@@ -132,6 +132,7 @@ func pluginRegistration() registration {
 				{Name: "warmup", Type: pluginapi.ConfigFieldTypeInteger, Description: "接管权重前需要连续成功探测的次数。未达标前插件不碰该凭据的 weight 字段。"},
 				{Name: "freshness", Type: pluginapi.ConfigFieldTypeString, Description: "探测开始失败后，冻结的旧权重还能继续信任多久，例如 90m。超时后在状态页标记为 stale。"},
 				{Name: "kickstart", Type: pluginapi.ConfigFieldTypeBoolean, Description: "周额度窗口从未启动过的账号，是否自动发一个最小推理请求把计时点着。这是本插件唯一会消耗额度的动作，默认关闭，dry_run 时不执行。"},
+				{Name: "kickstart_short_window", Type: pluginapi.ConfigFieldTypeBoolean, Description: "五小时窗口从未启动过时，是否同样点火。独立开关，默认关闭。注意它不改变本插件算出的任何权重——短窗口只是可用性闸门，不参与打分；它换来的是该窗口提前起算、从而在后续爆发用量打满时更早重置。窗口每几小时自己过期，所以闲置账号会反复触发，按冷却计费。"},
 				{Name: "kickstart_model", Type: pluginapi.ConfigFieldTypeString, Description: "点火请求使用的模型。Codex 会拒绝自家更小的模型，留空则用默认的 gpt-5.6-sol。"},
 				{Name: "kickstart_cooldown", Type: pluginapi.ConfigFieldTypeString, Description: "同一账号两次点火的最短间隔，例如 1h，最小 1m。按尝试记账而非按成功——中途失败的请求可能已在上游计费。"},
 				{Name: "dry_run", Type: pluginapi.ConfigFieldTypeBoolean, Description: "空跑模式：照常探测并计算权重，但不写回任何凭据。首次部署建议开启。"},
@@ -307,14 +308,21 @@ func (w *worker) status() map[string]any {
 	lastRun, lastErr, report := w.lastRun, w.lastErr, w.lastRep
 	w.resultMu.Unlock()
 
+	// The two budgets are listed apart because the switches are: an operator
+	// running one of them needs to see which credentials it applies to.
 	kicks := w.ctl.Kickstarts()
-	dormant := make([]string, 0, len(kicks.Dormant))
-	for authIndex, isDormant := range kicks.Dormant {
-		if isDormant {
-			dormant = append(dormant, authIndex)
+	weeklyDormant := make([]string, 0, len(kicks.Dormant))
+	shortDormant := make([]string, 0, len(kicks.Dormant))
+	for authIndex, dormancy := range kicks.Dormant {
+		if dormancy.Weekly {
+			weeklyDormant = append(weeklyDormant, authIndex)
+		}
+		if dormancy.Short {
+			shortDormant = append(shortDormant, authIndex)
 		}
 	}
-	slices.Sort(dormant)
+	slices.Sort(weeklyDormant)
+	slices.Sort(shortDormant)
 
 	accounts := w.ctl.Engine().Accounts()
 	rows := make([]map[string]any, 0, len(report.Decisions))
@@ -358,14 +366,18 @@ func (w *worker) status() map[string]any {
 		// registered but never reached is otherwise indistinguishable from a
 		// fleet that happens to be idle.
 		"observations_pending": w.ctl.Pending(),
-		// Kickstart is the one thing here that spends quota, so its switch, its
+		// Kickstart is the one thing here that spends quota, so its switches, its
 		// effective model and what it has actually done are all reportable.
-		"kickstart":       w.cfg.Options.Kickstart,
-		"kickstart_model": w.cfg.Options.KickstartModel,
-		"kickstarts_sent": kicks.Sent,
+		"kickstart":              w.cfg.Options.Kickstart,
+		"kickstart_short_window": w.cfg.Options.KickstartShortWindow,
+		"kickstart_model":        w.cfg.Options.KickstartModel,
+		"kickstarts_sent":        kicks.Sent,
 	}
-	if len(dormant) > 0 {
-		out["dormant_credentials"] = dormant
+	if len(weeklyDormant) > 0 {
+		out["dormant_credentials"] = weeklyDormant
+	}
+	if len(shortDormant) > 0 {
+		out["short_dormant_credentials"] = shortDormant
 	}
 	if kicks.LastErr != "" {
 		out["last_kickstart_error"] = kicks.LastErr

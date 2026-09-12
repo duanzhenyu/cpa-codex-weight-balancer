@@ -77,11 +77,35 @@ carried across configuration reloads, which the host performs far more often tha
 long. The credential is re-read immediately before the request, because the same cycle may
 have written a weight to it in between.
 
-Only the weekly budget can trigger this. When a payload carries no weekly window the short
-one is still promoted so the account can be priced, but a window that resets by itself
-every few hours is dormant half the time and paying to start it would recur forever.
+### The five-hour window
 
-This does not move traffic. Weights only steer *new* sessions, so a warmed credential that
+`kickstart_short_window: true` applies the same nudge to the short budget, on its own
+switch and also off by default. It buys something different, and it is worth being blunt
+about what:
+
+**It changes no weight this plugin computes.** The score comes from the weekly window
+alone; the short one is a pure availability gate that only matters once it is *spent*
+(`remaining <= 0`), and a window that has never started is full. What it buys is upstream:
+a short window whose clock is already running resets earlier relative to a later burst. An
+account that starts its window at the moment it begins working is blocked from that moment
+plus five hours when it exhausts the budget; one whose clock was started four hours earlier
+recovers in one. That block is a `weight 0`, which the host reads as a hard exclusion and
+answers by evicting the credential's sticky sessions too, so shortening it is not nothing.
+
+It also costs more often. The weekly clock is started once and then runs for a week; the
+short one expires on its own, and an idle account reads untouched again afterwards. **How
+often is not verified** — only a never-used window was observed to stay unstarted, not an
+expired one. If an expired window does re-arm the same way, an idle account costs one
+minimal request per `kickstart_cooldown`-bounded rollover, on the order of five a day. If
+Codex instead rolls the window straight into the next one, this switch only ever fires on
+an account that has never been used, and `kickstart` would have caught that anyway.
+
+One request starts both windows at the same instant (verified 2026-09-12: a served account
+read `7917/18000` and `594717/604800`, both exactly 10083s in), so a credential that
+satisfies both switches still costs exactly one request — and turning on only the
+short-window switch will start the weekly clock too on an account that has never been used.
+
+Neither switch moves traffic. Weights only steer *new* sessions, so a warmed credential that
 receives no cold binding still expires its week unused — as it would have anyway, minus the
 chance to compete for one.
 
@@ -102,8 +126,9 @@ plugins:
       freshness: 90m         # after this, a frozen weight is flagged stale
       quota_capacity: 0      # >0 puts quota and burn in one fleet-wide absolute unit
       kickstart: false       # spend one request to start a dormant weekly window
+      kickstart_short_window: false  # same for the 5h window; changes no weight, recurs
       kickstart_model: gpt-5.6-sol   # Codex rejects its own smaller models here
-      kickstart_cooldown: 1h # minimum 1m; bounds a nudge that never takes
+      kickstart_cooldown: 1h # minimum 1m; shared by both switches
       dry_run: false         # compute and report, write nothing
       # endpoint: https://chatgpt.com/backend-api/wham/usage   # must be https
 ```
@@ -147,7 +172,8 @@ re-price an account whose score sits where the old hysteresis band was holding i
 since the last cycle and will therefore be priced without a probe. It is the one signal
 that separates a usage hook the host never reaches from a fleet that is simply idle.
 
-`dormant_credentials` lists the auth indices whose weekly window has never started, and
+`dormant_credentials` lists the auth indices whose weekly window has never started and
+`short_dormant_credentials` those whose five-hour window has not, and
 `kickstarts_sent` / `last_kickstart_error` separate "no dormant accounts" from "dormancy
 detected but every nudge is being rejected".
 
@@ -202,9 +228,20 @@ detected but every nudge is being rejected".
   than a wrong weight.
 - **A kickstart cannot be confirmed from the response it gets.** Codex fills the quota
   headers before metering the request that carries them, so the 200 answering a kickstart
-  still reports the window as dormant. The plugin therefore discards any usage-hook reading
-  that says dormant and probes that credential instead: the only way such a reading reaches
-  it is on a response whose own request has just started the window.
+  still reports the window as dormant. A *weekly*-dormant usage-hook reading is therefore
+  discarded and that credential probed instead — it drives the score. A *short*-dormant one
+  is kept: it prices the week perfectly well, and it is positive evidence that the request
+  behind it has just started the short clock, so the kickstart it would trigger is already
+  paid for. That decision waits for a cycle with no traffic behind it.
+- **How often `kickstart_short_window` recurs is not verified.** Codex was observed to
+  leave a *never-used* window unstarted indefinitely; whether an *expired* one re-arms the
+  same way was not, because every account in the fleet had a running short window at the
+  time. The switch is safe either way — the cooldown bounds it — but the worst case is one
+  minimal request per idle account per rollover, roughly five a day.
+- **`kickstart_short_window` moves no weight.** The score reads the weekly window alone.
+  The short one only gates availability once it is spent, and a window that never started
+  is full, so nudging it changes nothing this plugin writes. Its payoff is upstream: an
+  earlier reset relative to a later burst.
 - **The inference endpoint is not configurable.** `kickstart_model` is, because Codex
   rejects its own smaller models there (`gpt-5.3-codex-spark` answers "not supported when
   using Codex with a ChatGPT account"), but the URL is fixed to what CPA itself posts to. A

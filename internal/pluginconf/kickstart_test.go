@@ -69,3 +69,24 @@ func TestKickstartCooldownRejectsGarbage(t *testing.T) {
 		t.Fatal("garbage duration accepted")
 	}
 }
+
+// The short-window switch is independent of the weekly one: it buys something
+// else (an earlier short-window reset, not a weight change) and costs more
+// often, so enabling one must never enable the other.
+func TestShortWindowKickstartIsIndependent(t *testing.T) {
+	for _, tc := range []struct {
+		yaml                string
+		weekly, shortWindow bool
+	}{
+		{"", false, false},
+		{"kickstart: true\n", true, false},
+		{"kickstart_short_window: true\n", false, true},
+		{"kickstart: true\nkickstart_short_window: true\n", true, true},
+	} {
+		got := decode(t, tc.yaml)
+		if got.Options.Kickstart != tc.weekly || got.Options.KickstartShortWindow != tc.shortWindow {
+			t.Fatalf("%q: kickstart=%v short=%v, want %v/%v",
+				tc.yaml, got.Options.Kickstart, got.Options.KickstartShortWindow, tc.weekly, tc.shortWindow)
+		}
+	}
+}

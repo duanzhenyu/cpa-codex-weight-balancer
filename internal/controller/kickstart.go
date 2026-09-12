@@ -6,6 +6,8 @@ import (
 	"maps"
 	"sync"
 	"time"
+
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/codex"
 )
 
 // KickstartEndpoint is Codex's inference endpoint, the one CPA itself posts to
@@ -37,7 +39,7 @@ const kickstartBody = `{"model":%q,"instructions":"","input":[{"type":"message",
 type kickstarts struct {
 	mu      sync.Mutex
 	last    map[string]time.Time
-	dormant map[string]bool
+	dormant map[string]codex.Dormancy
 	sent    int
 	lastErr string
 }
@@ -64,7 +66,7 @@ func (k *kickstarts) due(authIndex string, now time.Time, cooldown time.Duration
 //
 // The cooldown map is deliberately left alone: a credential that vanishes for
 // one cycle — an unreadable document, say — must not come back nudgeable.
-func (k *kickstarts) observe(dormant map[string]bool) {
+func (k *kickstarts) observe(dormant map[string]codex.Dormancy) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.dormant = dormant
@@ -88,7 +90,7 @@ func (k *kickstarts) record(err error) {
 type KickstartState struct {
 	// Last is when each credential was last nudged, keyed by auth index.
 	Last    map[string]time.Time
-	Dormant map[string]bool
+	Dormant map[string]codex.Dormancy
 	Sent    int
 	LastErr string
 }
@@ -116,11 +118,14 @@ func (c *Controller) RestoreKickstarts(s KickstartState) {
 	c.kicks.lastErr = s.LastErr
 }
 
-// kickstart spends one minimal inference request to start a dormant weekly
-// window. It deliberately ignores the response body: the only thing that
-// matters is that Codex metered the call, and the quota headers it answers with
-// describe the account as it was *before* this request, so they would read as
-// dormant all over again.
+// kickstart spends one minimal inference request on a credential with a dormant
+// window. One request is all it takes for either budget: Codex starts both of an
+// account's windows at the same instant, verified live on 2026-09-12 where a
+// served account read 7917/18000 and 594717/604800, both exactly 10083s in.
+//
+// It deliberately ignores the response body, and cannot confirm that anything
+// started: the quota headers it answers with describe the account as it was
+// *before* this request, so they read as dormant all over again.
 func (c *Controller) kickstart(authIndex string, now time.Time) {
 	if !c.kicks.due(authIndex, now, c.kickstartCooldown()) {
 		return
@@ -130,7 +135,11 @@ func (c *Controller) kickstart(authIndex string, now time.Time) {
 	// bytes read at the top of the cycle may already name a refreshed token.
 	_, raw, err := c.host.AuthGet(authIndex)
 	if err != nil {
-		c.kicks.record(fmt.Errorf("re-read before kickstart: %w", err))
+		// record feeds the status route, which is an HTTP endpoint and carries
+		// no file names. The host's error is free to name the document it could
+		// not read, so the cause goes to the log instead.
+		c.kicks.record(errors.New("re-read before kickstart failed"))
+		c.host.Log("warn", fmt.Sprintf("kickstart re-read failed for %s: %v", authIndex, err))
 		return
 	}
 	token := credentialString(raw, "access_token")
@@ -163,7 +172,7 @@ func (c *Controller) kickstart(authIndex string, now time.Time) {
 		c.host.Log("warn", fmt.Sprintf("kickstart failed for %s: %v", authIndex, err))
 		return
 	}
-	c.host.Log("info", fmt.Sprintf("kickstart started the weekly window for %s", authIndex))
+	c.host.Log("info", fmt.Sprintf("kickstart spent one inference request on %s", authIndex))
 }
 
 func (c *Controller) kickstartModel() string {

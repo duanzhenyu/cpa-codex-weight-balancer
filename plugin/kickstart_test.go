@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/codex"
 	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/controller"
 )
 
@@ -93,7 +94,7 @@ func TestReconfigureCarriesKickstartStateAcross(t *testing.T) {
 	mu.Unlock()
 	ctl.RestoreKickstarts(controller.KickstartState{
 		Last:    map[string]time.Time{"abc": time.Now().UTC()},
-		Dormant: map[string]bool{"abc": true},
+		Dormant: map[string]codex.Dormancy{"abc": {Weekly: true}},
 		Sent:    3,
 	})
 
@@ -112,9 +113,46 @@ func TestRegistrationDeclaresKickstartFields(t *testing.T) {
 	for _, f := range pluginRegistration().Metadata.ConfigFields {
 		names = append(names, f.Name)
 	}
-	for _, want := range []string{"kickstart", "kickstart_model", "kickstart_cooldown"} {
+	for _, want := range []string{"kickstart", "kickstart_short_window", "kickstart_model", "kickstart_cooldown"} {
 		if !slices.Contains(names, want) {
 			t.Fatalf("registration has no %q field: %v", want, names)
 		}
+	}
+}
+
+// The two switches drive different budgets, so the status route reports them
+// apart. Collapsing them would leave an operator running one switch unable to
+// tell which credentials it actually applies to.
+func TestStatusReportsTheTwoDormantBudgetsSeparately(t *testing.T) {
+	configure(t, "interval: 15m\nkickstart_short_window: true\ndry_run: true")
+	mu.Lock()
+	ctl := current.ctl
+	mu.Unlock()
+	ctl.RestoreKickstarts(controller.KickstartState{
+		Dormant: map[string]codex.Dormancy{
+			"fresh":  {Weekly: true, Short: true},
+			"rolled": {Short: true},
+			"busy":   {},
+		},
+	})
+
+	var out struct {
+		Kickstart      bool     `json:"kickstart"`
+		KickstartShort bool     `json:"kickstart_short_window"`
+		Weekly         []string `json:"dormant_credentials"`
+		Short          []string `json:"short_dormant_credentials"`
+	}
+	body := managementCall(t, "GET", pluginName+statusPath).Body
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("status is not JSON: %v\n%s", err, body)
+	}
+	if out.Kickstart || !out.KickstartShort {
+		t.Fatalf("switches reported as kickstart=%v short=%v", out.Kickstart, out.KickstartShort)
+	}
+	if !slices.Equal(out.Weekly, []string{"fresh"}) {
+		t.Fatalf("weekly list %v", out.Weekly)
+	}
+	if !slices.Equal(out.Short, []string{"fresh", "rolled"}) {
+		t.Fatalf("short list %v", out.Short)
 	}
 }

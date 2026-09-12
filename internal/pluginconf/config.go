@@ -36,11 +36,12 @@ type Config struct {
 	Warmup        *int     `yaml:"warmup"`
 	Freshness     string   `yaml:"freshness"`
 	DryRun        bool     `yaml:"dry_run"`
-	// Kickstart is the only setting that spends quota, so it is a plain bool
-	// with no pointer games: absent must mean off.
-	Kickstart         bool   `yaml:"kickstart"`
-	KickstartModel    string `yaml:"kickstart_model"`
-	KickstartCooldown string `yaml:"kickstart_cooldown"`
+	// The kickstart switches are the only settings that spend quota, so they are
+	// plain bools with no pointer games: absent must mean off.
+	Kickstart            bool   `yaml:"kickstart"`
+	KickstartShortWindow bool   `yaml:"kickstart_short_window"`
+	KickstartModel       string `yaml:"kickstart_model"`
+	KickstartCooldown    string `yaml:"kickstart_cooldown"`
 }
 
 // Resolved is a validated configuration.
@@ -81,6 +82,7 @@ func Decode(raw []byte) (Resolved, error) {
 		out.Options.Endpoint = endpoint
 	}
 	out.Options.Kickstart = cfg.Kickstart
+	out.Options.KickstartShortWindow = cfg.KickstartShortWindow
 	out.Options.KickstartModel = controller.DefaultKickstartModel
 	if model := strings.TrimSpace(cfg.KickstartModel); model != "" {
 		out.Options.KickstartModel = model

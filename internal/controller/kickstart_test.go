@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/balancer"
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/codex"
 )
 
 // A Codex window starts at the account's first metered request, so a credential
@@ -18,6 +19,27 @@ import (
 const dormantUsage = `{"rate_limit":{
   "primary_window":{"used_percent":0,"limit_window_seconds":18000,"reset_after_seconds":18000},
   "secondary_window":{"used_percent":0,"limit_window_seconds":604800,"reset_after_seconds":604800}}}`
+
+// The short window has merely rolled over here: the account's week is running,
+// but nothing has been spent in the last five hours, so Codex reports the short
+// budget untouched with a full span to go.
+const shortDormantUsage = `{"rate_limit":{
+  "primary_window":{"used_percent":0,"limit_window_seconds":18000,"reset_after_seconds":18000},
+  "secondary_window":{"used_percent":3,"limit_window_seconds":604800,"reset_after_seconds":604177}}}`
+
+func shortCtl(h Host, opts ...func(*Options)) *Controller {
+	o := Options{Policy: balancer.DefaultPolicy(), KickstartShortWindow: true}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	return New(h, o)
+}
+
+func shortDormantHost() *fakeHost {
+	h := newFakeHost()
+	h.usage = shortDormantUsage
+	return h
+}
 
 func kickCtl(h Host, opts ...func(*Options)) *Controller {
 	o := Options{Policy: balancer.DefaultPolicy(), Kickstart: true}
@@ -212,7 +234,7 @@ func TestKickstartStatusIsReportable(t *testing.T) {
 	if got.Sent != 1 || got.LastErr != "" {
 		t.Fatalf("sent=%d lastErr=%q", got.Sent, got.LastErr)
 	}
-	if !got.Dormant["a"] {
+	if !got.Dormant["a"].Weekly {
 		t.Fatalf("dormant map %v", got.Dormant)
 	}
 	if got.Last["a"].IsZero() {
@@ -278,8 +300,15 @@ func TestKickstartFailsClosedWhenTheReReadDoes(t *testing.T) {
 	// "re-read failed" and "credential carries no access token" point at
 	// entirely different problems, and the status route is the only place an
 	// operator can tell them apart.
-	if got := c.Kickstarts().LastErr; !strings.Contains(got, "re-read") {
+	got := c.Kickstarts().LastErr
+	if !strings.Contains(got, "re-read") {
 		t.Fatalf("last error %q does not name the re-read", got)
+	}
+	// The status route is an HTTP endpoint and must carry no file names. The
+	// host's own error for a missing credential is free to name the document it
+	// could not read, so it cannot be passed through.
+	if strings.Contains(got, "store unavailable") {
+		t.Fatalf("the host's error text reached the status route: %q", got)
 	}
 }
 
@@ -338,9 +367,9 @@ func TestRestoredKickstartStateIsCopied(t *testing.T) {
 	next := kickCtl(newFakeHost())
 	next.RestoreKickstarts(state)
 	state.Last["a"] = time.Time{}
-	state.Dormant["a"] = false
+	state.Dormant["a"] = codex.Dormancy{}
 
-	if got := next.Kickstarts(); got.Last["a"].IsZero() || !got.Dormant["a"] {
+	if got := next.Kickstarts(); got.Last["a"].IsZero() || !got.Dormant["a"].Weekly {
 		t.Fatalf("restored state aliases the caller's maps: %+v", got)
 	}
 }
@@ -356,7 +385,7 @@ func TestDormancyListForgetsCredentialsTheHostNoLongerLists(t *testing.T) {
 
 	c := kickCtl(h)
 	run(t, c, 1)
-	if got := c.Kickstarts().Dormant; !got["a"] || !got["b"] {
+	if got := c.Kickstarts().Dormant; !got["a"].Any() || !got["b"].Any() {
 		t.Fatalf("setup: %v", got)
 	}
 
@@ -364,10 +393,137 @@ func TestDormancyListForgetsCredentialsTheHostNoLongerLists(t *testing.T) {
 	if _, err := c.RunCycle(now.Add(time.Minute)); err != nil {
 		t.Fatalf("cycle: %v", err)
 	}
-	if got := c.Kickstarts().Dormant; got["b"] {
+	if got := c.Kickstarts().Dormant; got["b"].Any() {
 		t.Fatalf("status still lists a credential the host dropped: %v", got)
 	}
-	if got := c.Kickstarts().Dormant; !got["a"] {
+	if got := c.Kickstarts().Dormant; !got["a"].Any() {
 		t.Fatalf("lost the credential that is still listed: %v", got)
+	}
+}
+
+// The two switches select different budgets. A short window that has merely
+// rolled over is no evidence the account's week has yet to start, so the weekly
+// switch must leave it alone — and the short switch must not need the weekly
+// one turned on to do its job.
+func TestShortDormancyIsKickstartedOnlyByItsOwnSwitch(t *testing.T) {
+	for name, tc := range map[string]struct {
+		weekly, short bool
+		want          int
+	}{
+		"neither switch": {false, false, 0},
+		"weekly only":    {true, false, 0},
+		"short only":     {false, true, 1},
+		"both":           {true, true, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := shortDormantHost()
+			run(t, New(h, Options{
+				Policy:               balancer.DefaultPolicy(),
+				Kickstart:            tc.weekly,
+				KickstartShortWindow: tc.short,
+			}), 1)
+			if posts := h.byMethod("POST"); len(posts) != tc.want {
+				t.Fatalf("got %d kickstarts, want %d", len(posts), tc.want)
+			}
+		})
+	}
+}
+
+// One metered request starts both of an account's windows at the same instant:
+// the fleet's plus account read primary 7917/18000 and secondary 594717/604800
+// on 2026-09-12, both exactly 10083s in. So a fresh account satisfies both
+// switches at once and must still cost exactly one request.
+func TestBothBudgetsDormantStillCostsOneRequest(t *testing.T) {
+	h := dormantHost()
+	run(t, kickCtl(h, func(o *Options) { o.KickstartShortWindow = true }), 1)
+	if posts := h.byMethod("POST"); len(posts) != 1 {
+		t.Fatalf("got %d kickstarts, want 1", len(posts))
+	}
+}
+
+func TestShortWindowKickstartIsSuppressedByDryRun(t *testing.T) {
+	h := shortDormantHost()
+	run(t, shortCtl(h, func(o *Options) { o.DryRun = true }), 2)
+	if posts := h.byMethod("POST"); len(posts) != 0 {
+		t.Fatalf("dry run spent quota: %v", posts)
+	}
+}
+
+// The guards that keep a paid request off a credential that cannot serve apply
+// to whichever budget triggered it.
+func TestShortWindowKickstartSkipsCredentialsThatCannotServe(t *testing.T) {
+	for name, setup := range map[string]func(*fakeHost){
+		"host marked it unavailable": func(h *fakeHost) { h.entries[0].Unavailable = true },
+		"account reports limited": func(h *fakeHost) {
+			h.usage = strings.Replace(shortDormantUsage, `"rate_limit":{`, `"rate_limit":{"limit_reached":true,`, 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := shortDormantHost()
+			setup(h)
+			run(t, shortCtl(h), 1)
+			if posts := h.byMethod("POST"); len(posts) != 0 {
+				t.Fatalf("kickstarted a credential that cannot serve: %v", posts)
+			}
+		})
+	}
+}
+
+// The status route is the only diagnostic there is, and an operator running one
+// switch needs to see which budget each credential is actually dormant on.
+func TestTheTwoBudgetsAreReportedSeparately(t *testing.T) {
+	rolled := shortDormantHost()
+	c := shortCtl(rolled)
+	run(t, c, 1)
+	if got := c.Kickstarts().Dormant["a"]; got.Weekly || !got.Short {
+		t.Fatalf("a rolled-over short window on a running week: %+v", got)
+	}
+
+	fresh := dormantHost()
+	c2 := kickCtl(fresh)
+	run(t, c2, 1)
+	if got := c2.Kickstarts().Dormant["a"]; !got.Weekly || !got.Short {
+		t.Fatalf("an untouched account is dormant on both: %+v", got)
+	}
+}
+
+// A hook record exists only because the host served a request on that
+// credential, and Codex stamps its headers before metering. So a reading that
+// calls the short window untouched is evidence that this very request just
+// started it — the short clock is already running. Probing on the strength of
+// it would race Codex's backend, which took twelve seconds to begin decrementing
+// when this was measured live, and buy a request the traffic already bought.
+//
+// The weekly window is different and stays discarded: it drives the score, so a
+// pre-request reading of a week that has just begun is wrong where it counts.
+func TestShortDormantObservationIsTrustedAndDefersTheKickstart(t *testing.T) {
+	h := shortDormantHost()
+	c := shortCtl(h)
+	if !c.Observe("a", http.Header{
+		"X-Codex-Primary-Used-Percent":          {"0"},
+		"X-Codex-Primary-Window-Minutes":        {"300"},
+		"X-Codex-Primary-Reset-After-Seconds":   {"18000"},
+		"X-Codex-Secondary-Used-Percent":        {"3"},
+		"X-Codex-Secondary-Window-Minutes":      {"10080"},
+		"X-Codex-Secondary-Reset-After-Seconds": {"604177"},
+	}, now) {
+		t.Fatal("headers should have parsed")
+	}
+	if _, err := c.RunCycle(now); err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+	if gets := h.byMethod("GET"); len(gets) != 0 {
+		t.Fatalf("probed away a reading that still prices the week: %v", gets)
+	}
+	if posts := h.byMethod("POST"); len(posts) != 0 {
+		t.Fatalf("kickstarted off a reading whose own request started the clock: %v", posts)
+	}
+	// The credential is only nudged once a cycle with no traffic behind it
+	// confirms the window really is unstarted.
+	if _, err := c.RunCycle(now.Add(time.Minute)); err != nil {
+		t.Fatalf("confirming cycle: %v", err)
+	}
+	if posts := h.byMethod("POST"); len(posts) != 1 {
+		t.Fatalf("got %d deferred kickstarts, want 1", len(posts))
 	}
 }

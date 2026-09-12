@@ -68,9 +68,16 @@ type Options struct {
 	// Kickstart spends one minimal inference request on a credential whose
 	// weekly window has never started. It is the only thing here that costs
 	// quota, so it stays off unless the operator asks for it.
-	Kickstart         bool
-	KickstartModel    string
-	KickstartCooldown time.Duration
+	Kickstart bool
+	// KickstartShortWindow does the same for the five-hour budget. It is a
+	// separate switch because it buys something else and costs more often: the
+	// short window never enters the score, so starting it moves no weight —
+	// it only brings the window's reset forward, shortening the exclusion when
+	// a later burst spends that budget. And unlike the week, it expires on its
+	// own, so an idle account reads dormant again every few hours.
+	KickstartShortWindow bool
+	KickstartModel       string
+	KickstartCooldown    time.Duration
 }
 
 // Controller owns the engine and the host wiring.

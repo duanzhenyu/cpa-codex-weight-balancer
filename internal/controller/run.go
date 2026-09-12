@@ -23,7 +23,7 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 	names := make(map[string]string, len(entries))
 	observations := make([]balancer.Observation, 0, len(entries))
 	var dormantCreds []string
-	dormancy := make(map[string]bool, len(entries))
+	dormancy := make(map[string]codex.Dormancy, len(entries))
 	for _, entry := range entries {
 		// The host lists credentials at registration before it has assigned
 		// their runtime indices. Acting on one files its observation under the
@@ -49,7 +49,7 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 		// error. Deferred until the weights are written either way: a nudge is
 		// a side effect on the account, and one slow inference call must not
 		// hold up the repricing the cycle exists for.
-		if dormant && !entry.Unavailable && !observation.CircuitBroken {
+		if c.wantsKickstart(dormant) && !entry.Unavailable && !observation.CircuitBroken {
 			dormantCreds = append(dormantCreds, entry.AuthIndex)
 		}
 	}
@@ -84,7 +84,7 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 
 	// Kickstarting under dry_run would spend quota while promising to change
 	// nothing upstream — a louder breach of that promise than a weight write.
-	if c.opts.Kickstart && !c.opts.DryRun {
+	if !c.opts.DryRun {
 		for _, authIndex := range dormantCreds {
 			c.kickstart(authIndex, now)
 		}
@@ -92,18 +92,33 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 	return report, nil
 }
 
+// wantsKickstart maps the two switches onto the two budgets. Both can be true
+// of one credential — a fresh account has started neither — and the list they
+// feed is keyed by credential, so that still buys exactly one request, which is
+// all it takes: Codex starts both windows at the same instant.
+func (c *Controller) wantsKickstart(d codex.Dormancy) bool {
+	return (c.opts.Kickstart && d.Weekly) || (c.opts.KickstartShortWindow && d.Short)
+}
+
 // price turns one credential into an observation, preferring the quota a
 // request the host already served reported over spending a probe on it. Only a
 // credential nothing has used since the last cycle is probed, and staleness
 // there is self-limiting: an account quiet enough to have no fresh reading is
 // also one whose windows have barely moved.
-// It also reports whether the weekly window has never started.
-func (c *Controller) price(authIndex string, raw []byte, observed map[string]codex.Usage, now time.Time) (balancer.Observation, bool) {
-	// A dormant reading is always stale, so it is dropped in favour of a probe.
-	// Codex stamps these headers before it meters the request carrying them, so
-	// the only way one reaches us is on a response whose own request has just
-	// started the window it calls dormant.
-	if usage, ok := observed[authIndex]; ok && !usage.Dormant {
+// It also reports which of the account's windows have never started.
+func (c *Controller) price(authIndex string, raw []byte, observed map[string]codex.Usage, now time.Time) (balancer.Observation, codex.Dormancy) {
+	// A weekly-dormant reading is dropped in favour of a probe: it drives the
+	// score, and Codex stamps these headers before metering the request carrying
+	// them, so the only way one reaches us is on a response whose own request
+	// has just started the week it calls dormant.
+	//
+	// A short-dormant reading is kept. It prices the week perfectly well — the
+	// score never reads the short window — and it is positive evidence that the
+	// request behind it has just started the short clock, so the kickstart it
+	// would otherwise trigger is already paid for. That decision waits for a
+	// cycle with no traffic behind it, which is the only kind the short switch
+	// exists for anyway.
+	if usage, ok := observed[authIndex]; ok && !usage.Dormant.Weekly {
 		// A cycle reads its clock before it drains, so a record that landed in
 		// between is stamped after this cycle's now and Compute rejects it as
 		// observed in the future — freezing an account that just reported
@@ -114,7 +129,7 @@ func (c *Controller) price(authIndex string, raw []byte, observed map[string]cod
 		if usage.Snapshot.ObservedAt.After(now) {
 			usage.Snapshot.ObservedAt = now
 		}
-		return c.observation(usage), false
+		return c.observation(usage), codex.Dormancy{}
 	}
 	return c.probe(authIndex, raw, now)
 }
@@ -122,10 +137,10 @@ func (c *Controller) price(authIndex string, raw []byte, observed map[string]cod
 // probe fetches and parses one account's quota. Every failure path yields a
 // frozen observation rather than an error: one unreachable account must not
 // stop the fleet from being repriced.
-func (c *Controller) probe(authIndex string, raw []byte, now time.Time) (balancer.Observation, bool) {
+func (c *Controller) probe(authIndex string, raw []byte, now time.Time) (balancer.Observation, codex.Dormancy) {
 	token := credentialString(raw, "access_token")
 	if token == "" {
-		return failed(authIndex, errors.New("credential carries no access token")), false
+		return failed(authIndex, errors.New("credential carries no access token")), codex.Dormancy{}
 	}
 	headers := map[string][]string{
 		"Authorization": {"Bearer " + token},
@@ -139,15 +154,15 @@ func (c *Controller) probe(authIndex string, raw []byte, now time.Time) (balance
 
 	resp, err := c.host.HTTPDo(HTTPRequest{Method: "GET", URL: c.opts.Endpoint, Headers: headers})
 	if err != nil {
-		return failed(authIndex, err), false
+		return failed(authIndex, err), codex.Dormancy{}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return failed(authIndex, fmt.Errorf("usage probe returned %d", resp.StatusCode)), false
+		return failed(authIndex, fmt.Errorf("usage probe returned %d", resp.StatusCode)), codex.Dormancy{}
 	}
 
 	usage, err := codex.ParseUsage(resp.Body, authIndex, 0, now)
 	if err != nil {
-		return failed(authIndex, err), false
+		return failed(authIndex, err), codex.Dormancy{}
 	}
 	return c.observation(usage), usage.Dormant
 }
