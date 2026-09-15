@@ -1,5 +1,5 @@
 PLUGIN  := cpa-codex-weight-balancer
-VERSION := 0.4.0
+VERSION := 0.5.0
 GOOS    ?= $(shell go env GOOS)
 GOARCH  ?= $(shell go env GOARCH)
 EXT     := $(if $(filter windows,$(GOOS)),.dll,$(if $(filter darwin,$(GOOS)),.dylib,.so))

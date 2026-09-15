@@ -20,7 +20,7 @@ import (
 
 const (
 	pluginName    = "cpa-codex-weight-balancer"
-	pluginVersion = "0.4.0"
+	pluginVersion = "0.5.0"
 	// The host rejects a registration whose Author or GitHubRepository is
 	// blank, regardless of which capabilities it declares.
 	pluginAuthor = "duanzhenyu"
