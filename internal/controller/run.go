@@ -20,20 +20,24 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 	}
 
 	observed := c.observed.drain()
+	// An excluded account is priced by probe alone. A request that began before
+	// its budget ran out can finish after the exclusion, leaving a reading of
+	// quota the account no longer has.
+	for id, account := range c.engine.Accounts() {
+		if account.State == balancer.StateUnavailable {
+			delete(observed, id)
+		}
+	}
 	names := make(map[string]string, len(entries))
 	observations := make([]balancer.Observation, 0, len(entries))
 	var dormantCreds []string
 	dormancy := make(map[string]codex.Dormancy, len(entries))
+	listed := make(map[string]bool, len(entries))
 	for _, entry := range entries {
-		// The host lists credentials at registration before it has assigned
-		// their runtime indices. Acting on one files its observation under the
-		// empty id, collapsing the fleet onto a phantom account.
-		if strings.TrimSpace(entry.AuthIndex) == "" {
+		if !serviceable(entry) {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(entry.Type), "codex") || entry.Disabled {
-			continue
-		}
+		listed[entry.AuthIndex] = true
 		name, raw, errGet := c.host.AuthGet(entry.AuthIndex)
 		if errGet != nil {
 			observations = append(observations, failed(entry.AuthIndex, errGet))
@@ -55,6 +59,7 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 	}
 
 	c.kicks.observe(dormancy)
+	c.rechecks.list(listed)
 
 	report := c.engine.Cycle(observations, now)
 	for _, decision := range report.Decisions {
@@ -64,20 +69,7 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 		if !decision.Write {
 			continue
 		}
-		if c.opts.DryRun {
-			c.host.Log("info", fmt.Sprintf("dry run: %s would move to weight %d", decision.AuthID, decision.Weight))
-			continue
-		}
-		saved, errWrite := c.write(names[decision.AuthID], decision.AuthID, decision.Weight)
-		if errWrite != nil {
-			c.host.Log("warn", fmt.Sprintf("weight write-back failed for %s: %v", decision.AuthID, errWrite))
-			continue
-		}
-		// Only a confirmed save may be recorded. Committing on intent leaves a
-		// rejected write permanently outstanding, because every later cycle
-		// would see the weight as already on disk and skip it.
-		c.engine.Commit(decision.AuthID, decision.Weight)
-		if saved {
+		if c.commit(names[decision.AuthID], decision) {
 			report.Wrote++
 		}
 	}
@@ -90,6 +82,34 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 		}
 	}
 	return report, nil
+}
+
+// serviceable reports whether a listed credential is one this plugin prices. The
+// host lists credentials at registration before it has assigned their runtime
+// indices, and acting on one files its observation under the empty id,
+// collapsing the fleet onto a phantom account.
+func serviceable(entry AuthEntry) bool {
+	return strings.TrimSpace(entry.AuthIndex) != "" &&
+		strings.EqualFold(strings.TrimSpace(entry.Type), "codex") &&
+		!entry.Disabled
+}
+
+// commit writes one decision back and reports whether a save reached the host.
+func (c *Controller) commit(name string, decision balancer.Decision) bool {
+	if c.opts.DryRun {
+		c.host.Log("info", fmt.Sprintf("dry run: %s would move to weight %d", decision.AuthID, decision.Weight))
+		return false
+	}
+	saved, err := c.write(name, decision.AuthID, decision.Weight)
+	if err != nil {
+		c.host.Log("warn", fmt.Sprintf("weight write-back failed for %s: %v", decision.AuthID, err))
+		return false
+	}
+	// Only a confirmed save may be recorded. Committing on intent leaves a
+	// rejected write permanently outstanding, because every later cycle would
+	// see the weight as already on disk and skip it.
+	c.engine.Commit(decision.AuthID, decision.Weight)
+	return saved
 }
 
 // wantsKickstart maps the two switches onto the two budgets. Both can be true

@@ -130,32 +130,56 @@ func (e *Engine) Cycle(obs []Observation, now time.Time) Report {
 	defer e.mu.Unlock()
 	rep := Report{Decisions: make([]Decision, 0, len(obs))}
 	for _, o := range obs {
-		id := o.Snapshot.AuthID
-		e.reconcile(id, o.Disk)
-		next, rate, err := e.Policy.evaluate(e.accounts[id], o, now)
-		e.accounts[id] = next
-
-		d := Decision{AuthID: id, State: next.State, Weight: next.Weight, Degraded: rate.Degraded}
-		if err != nil {
-			d.Error = err.Error()
-		}
-		if err == nil {
-			if prev, ok := e.previous[id]; ok {
-				d.Burn = observedBurn(prev, o.Snapshot)
-			}
-			e.previous[id] = o.Snapshot
-		}
-		// Pending accounts are not ours to touch yet.
-		if next.State != StatePending {
-			if last, ok := e.written[id]; !ok || last != next.Weight {
-				d.Write = true
-				rep.Changed++
-			}
+		next, rate, err := e.Policy.evaluate(e.accounts[o.Snapshot.AuthID], o, now)
+		d := e.apply(o, next, rate, err)
+		if d.Write {
+			rep.Changed++
 		}
 		rep.Decisions = append(rep.Decisions, d)
 	}
 	slices.SortFunc(rep.Decisions, func(a, b Decision) int { return cmp.Compare(a.AuthID, b.AuthID) })
 	return rep
+}
+
+// Recheck folds one probe taken off the timer — in answer to a rejected request,
+// or because an exclusion fell due. Only exclusions may move there: re-pricing a
+// serving account would commit a bucket the timer never chose, and the next
+// cycle would write it, wiping the host's accumulator once per rejection. Unless
+// the account is excluded before or after this probe, it reports false and
+// leaves the account exactly as it was.
+func (e *Engine) Recheck(o Observation, now time.Time) (Decision, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	prev := e.accounts[o.Snapshot.AuthID]
+	next, rate, err := e.Policy.evaluate(prev, o, now)
+	if prev.State != StateUnavailable && next.State != StateUnavailable {
+		return Decision{}, false
+	}
+	return e.apply(o, next, rate, err), true
+}
+
+func (e *Engine) apply(o Observation, next Account, rate Rate, err error) Decision {
+	id := o.Snapshot.AuthID
+	e.reconcile(id, o.Disk)
+	e.accounts[id] = next
+
+	d := Decision{AuthID: id, State: next.State, Weight: next.Weight, Degraded: rate.Degraded}
+	if err != nil {
+		d.Error = err.Error()
+	}
+	if err == nil {
+		if prev, ok := e.previous[id]; ok {
+			d.Burn = observedBurn(prev, o.Snapshot)
+		}
+		e.previous[id] = o.Snapshot
+	}
+	// Pending accounts are not ours to touch yet.
+	if next.State != StatePending {
+		if last, ok := e.written[id]; !ok || last != next.Weight {
+			d.Write = true
+		}
+	}
+	return d
 }
 
 // observedBurn derives the weekly drain rate between two snapshots. A window

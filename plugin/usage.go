@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -10,8 +11,8 @@ import (
 )
 
 // handleUsage records the quota an upstream Codex response reported, sparing
-// that credential a probe on the next cycle. It writes nothing: weights move
-// only on the ticker, because every weight change wipes the host's whole
+// that credential a probe on the next cycle. It writes nothing: a reading moves
+// weights only on the ticker, because every weight change wipes the host's whole
 // smooth-WRR accumulator.
 //
 // Anything it cannot use is dropped rather than reported. The host fuses a
@@ -27,21 +28,29 @@ func handleUsage(request []byte) ([]byte, error) {
 	if !strings.EqualFold(strings.TrimSpace(record.Provider), "codex") {
 		return okEnvelope(map[string]any{})
 	}
-	// A rejected request answers with well-formed headers of its own, and a 429
-	// answers with headers saying the account is spent. Pricing off those would
-	// run the credential through rate.Blocked to weight 0 — a hard exclusion
-	// that evicts its bound sticky sessions too — at request rate instead of on
-	// the timer. Reacting to a 429 is the host's job. The probe reaches the same
-	// verdict on the next cycle if the account really is out.
-	if record.Failed || record.Failure.StatusCode >= 400 {
+	// Held until the record is filed. Released earlier, a reconfigure can swap
+	// the worker in between and the record lands on one nobody drains.
+	mu.Lock()
+	defer mu.Unlock()
+	worker := current
+	// The host can deliver a record between shutdown and the next register.
+	if worker == nil {
 		return okEnvelope(map[string]any{})
 	}
 
-	mu.Lock()
-	worker := current
-	mu.Unlock()
-	// The host can deliver a record between shutdown and the next register.
-	if worker == nil {
+	// A 429 is not a quota reading, but it is a reason to take one. The reading a
+	// served request left behind can predate the budget running out — how a spent
+	// account kept its full weight for a whole cycle — so the worker probes the
+	// credential off the timer, and only the probe decides.
+	if record.Failure.StatusCode == http.StatusTooManyRequests {
+		worker.reject(record.AuthIndex)
+		return okEnvelope(map[string]any{})
+	}
+	// A rejected request answers with well-formed headers of its own, and a 429
+	// with headers saying the account is spent. Pricing off those would run the
+	// credential through rate.Blocked to weight 0 — a hard exclusion that evicts
+	// its bound sticky sessions too — at request rate instead of on the timer.
+	if record.Failed || record.Failure.StatusCode >= 400 {
 		return okEnvelope(map[string]any{})
 	}
 

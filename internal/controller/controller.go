@@ -97,6 +97,9 @@ type Controller struct {
 	observed observations
 	// kicks remembers which dormant credentials have already been nudged.
 	kicks kickstarts
+	// rechecks queues the credentials the host saw rejected, for a probe off the
+	// timer.
+	rechecks rechecks
 }
 
 // New builds a controller.

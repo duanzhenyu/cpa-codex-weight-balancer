@@ -34,6 +34,7 @@ type fakeHost struct {
 	getErr  map[string]error
 	saves   []save
 	saveErr error
+	listErr error
 	// kickStatus and kickErr answer the inference request, which has its own
 	// failure modes: the probe can be healthy while a kickstart is rejected.
 	kickStatus int
@@ -56,7 +57,7 @@ func newFakeHost() *fakeHost {
 	}
 }
 
-func (h *fakeHost) AuthList() ([]AuthEntry, error) { return h.entries, nil }
+func (h *fakeHost) AuthList() ([]AuthEntry, error) { return h.entries, h.listErr }
 
 func (h *fakeHost) AuthGet(authIndex string) (string, []byte, error) {
 	h.gets = append(h.gets, authIndex)

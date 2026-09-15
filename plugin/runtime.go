@@ -40,6 +40,9 @@ type worker struct {
 	ctl  *controller.Controller
 	stop chan struct{}
 	done chan struct{}
+	// wake carries rejections from the host's usage queue to the loop. One
+	// signal is enough: the controller holds the rejections themselves.
+	wake chan struct{}
 
 	resultMu sync.Mutex
 	lastRun  time.Time
@@ -189,6 +192,7 @@ func reconfigure(request []byte) error {
 		ctl:  controller.New(hostBridge{}, cfg.Options),
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
+		wake: make(chan struct{}, 1),
 	}
 	if previous != nil {
 		// Both halves matter: Accounts keeps the committed buckets, Written
@@ -209,6 +213,7 @@ func reconfigure(request []byte) error {
 		// from re-billing the account every cycle, and the host reconfigures
 		// far more often than that cooldown is long.
 		next.ctl.RestoreKickstarts(previous.ctl.Kickstarts())
+		next.ctl.RestoreRechecks(previous.ctl.Rechecks())
 	}
 	current = next
 	go next.loop()
@@ -245,18 +250,66 @@ func (w *worker) loop() {
 	}
 	ticker := time.NewTicker(w.cfg.Interval)
 	defer ticker.Stop()
-	w.cycle()
+	recovery := time.NewTimer(time.Hour)
+	recovery.Stop()
+	defer recovery.Stop()
+	failed := w.cycle() != nil
 	for {
+		w.arm(recovery, failed)
 		select {
 		case <-w.stop:
 			return
 		case <-ticker.C:
-			w.cycle()
+			failed = w.cycle() != nil
+		case <-w.wake:
+			failed = w.recheck() != nil
+		case <-recovery.C:
+			failed = w.recheck() != nil
 		}
 	}
 }
 
-func (w *worker) cycle() {
+// arm points the timer at the controller's next recheck.
+func (w *worker) arm(timer *time.Timer, failed bool) {
+	timer.Stop()
+	now := time.Now().UTC()
+	if at, ok := w.ctl.NextRecheck(now); ok {
+		timer.Reset(recheckDelay(now, at, failed))
+	}
+}
+
+// recheckDelay is how long to wait for a recheck due at at. One that failed
+// learned nothing, and an overdue timer fired straight back at it spins on the
+// host.
+func recheckDelay(now, at time.Time, failed bool) time.Duration {
+	delay := max(at.Sub(now), 0)
+	if failed {
+		delay = max(delay, controller.RecheckGap)
+	}
+	return delay
+}
+
+// reject notes a 429 and wakes the loop without waiting for it: the caller is
+// the host's usage queue.
+func (w *worker) reject(authIndex string) {
+	if !w.ctl.NoteRejected(authIndex) {
+		return
+	}
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (w *worker) recheck() error {
+	if _, err := w.ctl.Recheck(time.Now().UTC()); err != nil {
+		hostBridge{}.Log("warn", "recheck failed: "+err.Error())
+		return err
+	}
+	return nil
+}
+
+func (w *worker) cycle() error {
 	report, err := w.ctl.RunCycle(time.Now().UTC())
 	w.resultMu.Lock()
 	w.lastRun, w.lastRep, w.lastErr = time.Now().UTC(), report, ""
@@ -266,11 +319,12 @@ func (w *worker) cycle() {
 	w.resultMu.Unlock()
 	if err != nil {
 		hostBridge{}.Log("warn", "cycle failed: "+err.Error())
-		return
+		return err
 	}
 	if report.Changed > 0 {
 		hostBridge{}.Log("info", fmt.Sprintf("wrote %d of %d pending weight changes across %d credentials", report.Wrote, report.Changed, len(report.Decisions)))
 	}
+	return nil
 }
 
 func handleManagement(raw []byte) ([]byte, error) {
@@ -340,6 +394,9 @@ func (w *worker) status() map[string]any {
 			row["error"] = d.Error
 		}
 		if account, ok := accounts[d.AuthID]; ok {
+			// A recheck moves an account between cycles, and this is the only
+			// place that shows it before the next one.
+			row["state"], row["weight"] = stateName(account.State), account.Weight
 			row["stale"] = account.Stale
 			if account.Bucket.Set {
 				row["bucket"] = account.Bucket.Index
@@ -366,6 +423,8 @@ func (w *worker) status() map[string]any {
 		// registered but never reached is otherwise indistinguishable from a
 		// fleet that happens to be idle.
 		"observations_pending": w.ctl.Pending(),
+		// Credentials a 429 has queued for a probe off the timer.
+		"rejections_pending": w.ctl.Rejections(),
 		// Kickstart is the one thing here that spends quota, so its switches, its
 		// effective model and what it has actually done are all reportable.
 		"kickstart":              w.cfg.Options.Kickstart,
@@ -384,6 +443,9 @@ func (w *worker) status() map[string]any {
 	}
 	if !lastRun.IsZero() {
 		out["last_run"] = lastRun.Format(time.RFC3339)
+	}
+	if last := w.ctl.LastRecheck(); !last.IsZero() {
+		out["last_recheck"] = last.Format(time.RFC3339)
 	}
 	if lastErr != "" {
 		out["last_error"] = lastErr

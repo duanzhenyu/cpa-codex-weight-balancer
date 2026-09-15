@@ -13,8 +13,9 @@ credential. Routing stays entirely with the host, so `session-affinity` keeps wo
 headers. Codex reports the same two account-wide windows there that the probe fetches,
 so a credential that served a request since the last cycle is priced from that reading
 instead of costing a probe. The host dispatches those records from its own queue, so
-this is not on the request path, and the hook never writes a weight — weights still move
-only on the timer.
+this is not on the request path, and the hook never writes a weight. Readings move weights
+only on the timer; a 429 queues a probe that can exclude the account at once (see Known
+limits).
 
 ## Why time-to-reset, not just remaining quota
 
@@ -172,6 +173,11 @@ re-price an account whose score sits where the old hysteresis band was holding i
 since the last cycle and will therefore be priced without a probe. It is the one signal
 that separates a usage hook the host never reaches from a fleet that is simply idle.
 
+`rejections_pending` counts the credentials a 429 has queued for a probe, and
+`last_recheck` is when one was last probed off the timer. Rows show each account as it
+stands now, so an exclusion a recheck made appears before the next cycle;
+`weights_pending` and `weights_written` still describe the last cycle only.
+
 `dormant_credentials` lists the auth indices whose weekly window has never started and
 `short_dormant_credentials` those whose five-hour window has not, and
 `kickstarts_sent` / `last_kickstart_error` separate "no dormant accounts" from "dormancy
@@ -220,7 +226,8 @@ detected but every nudge is being rejected".
   priced from the last response it served, not from the moment the cycle runs. The
   staleness is self-limiting rather than bounded: a credential quiet enough to have no
   recent reading is also one whose windows have barely moved. An idle credential is
-  probed as before.
+  probed as before, and so is an excluded one: a request that began before its budget
+  ran out can report quota left after the exclusion.
 - **The response headers are Codex's to change too.** `X-Codex-Primary/Secondary-*` was
   captured from live traffic on 2026-09-12 and CPA retains it verbatim, but it is not a
   documented contract. A response that carries no usable window is dropped and that
@@ -246,15 +253,21 @@ detected but every nudge is being rejected".
   rejects its own smaller models there (`gpt-5.3-codex-spark` answers "not supported when
   using Codex with a ChatGPT account"), but the URL is fixed to what CPA itself posts to. A
   fleet pointed at a non-default Codex base URL gets a failed kickstart, which is inert.
-- **This is not a 429 circuit breaker.** Only responses the host actually served are
-  read; a failed request is dropped even though its headers parse, because a 429
-  answers with a spent window and pricing off that would write `weight: 0` — a hard
-  exclusion that evicts bound sticky sessions — at request rate rather than on the
-  timer. The account is excluded on the next cycle if the probe agrees it is out.
-  Instant exclusion on 429 is the host's own job (`Quota.Exceeded` plus the affinity
-  selector's reselect); note that the host derives the *recovery* time from
-  `Retry-After` or blind exponential backoff capped at 30 minutes, and never from the
-  `Reset-After-Seconds` sitting in that same response.
+- **A 429 triggers a probe, not an exclusion.** A failed request is still never read as
+  quota: a 429 answers with a spent window, and pricing off that would write
+  `weight: 0` — a hard exclusion that evicts bound sticky sessions — at request rate.
+  Instead the credential is queued and probed at once, off the timer, and only that
+  probe can exclude it. Off the timer only moves into or out of `weight: 0` are applied;
+  re-pricing a serving account still waits for the ticker. Rejections of one credential
+  are coalesced and probed at most once a minute, and a further 429 on an excluded
+  credential triggers no probe of its own; the ticker still probes it every cycle. On
+  top of that, a timer rechecks the exclusion 30 seconds after the recorded reset and
+  lifts it if the probe agrees; one that still reads spent is retried a minute later,
+  since whether Codex has actually reset at the instant it reported is not verified. A 429 the probe does not confirm — budget left — changes nothing, and routing
+  to that account is left to the host, which derives its own recovery time from
+  `Retry-After` or blind exponential backoff capped at 30 minutes, never from the
+  `Reset-After-Seconds` sitting in that same response. A recheck whose probe fails is
+  retried once, a minute later; a probe endpoint that stays down is left to the ticker.
 
 ## Requirements
 

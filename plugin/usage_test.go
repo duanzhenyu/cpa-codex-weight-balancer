@@ -114,7 +114,8 @@ func TestUsageRecordBeforeConfigureIsNotAnError(t *testing.T) {
 func TestUsageHookNeverWritesAWeight(t *testing.T) {
 	// No host API is installed in tests, so any host call fails closed and a
 	// write attempt would surface as an error envelope. The stronger guarantee
-	// is structural: the hook only ever reaches Controller.Observe.
+	// is structural: the hook only ever reaches Controller.Observe and
+	// NoteRejected, neither of which calls the host.
 	configure(t, "interval: 15m")
 	for range 100 {
 		if env := call(t, pluginabi.MethodUsageHandle, codexRecord()); !env.OK {
@@ -154,8 +155,8 @@ func TestFailedRequestsAreNotUsedAsQuotaReadings(t *testing.T) {
 	// A 429 answers with perfectly well-formed headers saying the account is
 	// spent. Ingesting them would run the credential through rate.Blocked to
 	// weight 0 — a hard exclusion that also evicts its bound sticky sessions —
-	// at request rate rather than on the timer. Reacting to 429 is the host's
-	// job; this plugin only ever prices from responses the host actually served.
+	// at request rate rather than on the timer. A 429 only queues a probe; this
+	// plugin prices from responses the host actually served.
 	configure(t, "interval: 15m")
 	for name, mark := range map[string]func(*pluginapi.UsageRecord){
 		"failed flag": func(r *pluginapi.UsageRecord) { r.Failed = true },

@@ -223,6 +223,9 @@ func TestCycleAndAccountsAreSafeInParallel(t *testing.T) {
 		func(int) { e.Accounts() },
 		func(int) { e.Written() },
 		func(i int) { e.Commit("a", int64(i)) },
+		func(i int) {
+			e.Recheck(obsFor("b", 500, 7*24*time.Hour, 0, time.Hour, now), now.Add(time.Duration(i)*time.Second))
+		},
 	} {
 		wg.Add(1)
 		go func(work func(int)) {
