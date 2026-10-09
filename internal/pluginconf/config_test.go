@@ -161,3 +161,12 @@ func TestRejectsEndpointThatWouldLeakTokens(t *testing.T) {
 		t.Fatalf("a plain https endpoint must stay configurable: %v", err)
 	}
 }
+
+func TestErrorPenaltySwitch(t *testing.T) {
+	if got := decode(t, ""); got.Options.Policy.ErrorPenalty {
+		t.Fatal("error_penalty must default off")
+	}
+	if got := decode(t, "error_penalty: true"); !got.Options.Policy.ErrorPenalty {
+		t.Fatal("error_penalty: true was not applied")
+	}
+}

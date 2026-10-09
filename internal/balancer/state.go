@@ -33,6 +33,9 @@ type Account struct {
 	LastGood  time.Time
 	RecoverAt time.Time
 	Stale     bool
+	// ErrorRate is the smoothed share of the account's requests that failed for
+	// reasons of its own. Only Engine.Fold moves it.
+	ErrorRate float64
 }
 
 // Observation is one probe outcome for one account.
@@ -46,6 +49,13 @@ type Observation struct {
 	// plugin — and a weight that vanished there is a credential the host is
 	// routing at its default of 1.
 	Disk DiskWeight
+}
+
+// Outcomes counts requests by result. Failures holds only those that reflect on
+// the credential, and Requests includes them.
+type Outcomes struct {
+	Requests int
+	Failures int
 }
 
 // DiskWeight is the tri-state result of looking for a weight in a credential
@@ -66,11 +76,23 @@ type Policy struct {
 	Warmup int
 	// Freshness bounds how long a frozen weight is trusted after probes fail.
 	Freshness time.Duration
+	// ErrorPenalty discounts the score by the account's error rate.
+	ErrorPenalty bool
 }
 
 const (
 	DefaultWarmup    = 2
 	DefaultFreshness = 90 * time.Minute
+)
+
+const (
+	// errorPrior is the fewest requests a cycle's error rate is taken over, so a
+	// single failure on an idle account does not read as all of its traffic.
+	errorPrior = 10
+	// errorDecay is the share of the previous rate a cycle keeps. A penalized
+	// account draws less traffic and so less evidence; decaying is what lets it
+	// earn its weight back.
+	errorDecay = 0.5
 )
 
 // DefaultPolicy returns the documented starting configuration.
@@ -120,13 +142,31 @@ func (p Policy) evaluate(prev Account, obs Observation, now time.Time) (Account,
 	}
 
 	next.RecoverAt = time.Time{}
-	next.Bucket, _ = p.Quantizer.Commit(prev.Bucket, rate.Score)
+	score := rate.Score
+	if p.ErrorPenalty {
+		score *= 1 - next.ErrorRate
+	}
+	if score > 0 {
+		next.Bucket, _ = p.Quantizer.Commit(prev.Bucket, score)
+	} else {
+		// The discount took the whole score, or underflowed it. The quantizer
+		// ignores a zero score, which would leave an account that fails every
+		// request at the weight it held — or at the anchor, if a reload has just
+		// cleared its bucket.
+		lo, _ := p.Quantizer.Bounds()
+		next.Bucket = Bucket{Index: lo, Set: true}
+	}
 	next.Weight = p.Quantizer.Weight(next.Bucket.Index)
 	next.State = StateActive
 	if next.Weight <= p.Quantizer.MinWeight {
 		next.State = StateDraining
 	}
 	return next, rate, nil
+}
+
+func errorRate(prev float64, o Outcomes) float64 {
+	cycle := float64(o.Failures) / float64(max(o.Requests, errorPrior))
+	return errorDecay*prev + (1-errorDecay)*cycle
 }
 
 // freeze holds the last committed weight. A transient probe failure must never

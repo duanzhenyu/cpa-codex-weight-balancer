@@ -100,6 +100,8 @@ type Controller struct {
 	// rechecks queues the credentials the host saw rejected, for a probe off the
 	// timer.
 	rechecks rechecks
+	// outcomes counts each credential's requests since the last tick.
+	outcomes outcomes
 }
 
 // New builds a controller.
@@ -128,8 +130,17 @@ func New(h Host, o Options) *Controller {
 func (c *Controller) Engine() *balancer.Engine { return c.engine }
 
 // RunCycle probes every Codex credential and writes back the weights that moved.
+// It prices with the error rates as they stand: only Tick may fold new outcomes.
 func (c *Controller) RunCycle(now time.Time) (balancer.Report, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.run(now)
+	return c.run(now, false)
+}
+
+// Tick is the scheduled cycle: RunCycle after folding the request outcomes
+// counted since the last tick.
+func (c *Controller) Tick(now time.Time) (balancer.Report, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.run(now, true)
 }

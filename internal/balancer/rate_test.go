@@ -20,7 +20,7 @@ func snap(weekly, five quota.Window) quota.Snapshot {
 
 func near(t *testing.T, got, want float64) {
 	t.Helper()
-	if math.Abs(got-want) > math.Abs(want)*1e-9+1e-12 {
+	if !(math.Abs(got-want) <= math.Abs(want)*1e-9+1e-12) {
 		t.Fatalf("got %g, want %g", got, want)
 	}
 }

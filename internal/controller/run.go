@@ -13,7 +13,7 @@ import (
 	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/quota"
 )
 
-func (c *Controller) run(now time.Time) (balancer.Report, error) {
+func (c *Controller) run(now time.Time, fold bool) (balancer.Report, error) {
 	entries, err := c.host.AuthList()
 	if err != nil {
 		return balancer.Report{}, fmt.Errorf("list credentials: %w", err)
@@ -60,6 +60,14 @@ func (c *Controller) run(now time.Time) (balancer.Report, error) {
 
 	c.kicks.observe(dormancy)
 	c.rechecks.list(listed)
+	if fold {
+		tally := c.outcomes.drain()
+		folded := make(map[string]balancer.Outcomes, len(listed))
+		for id := range listed {
+			folded[id] = tally[id]
+		}
+		c.engine.Fold(folded)
+	}
 
 	report := c.engine.Cycle(observations, now)
 	for _, decision := range report.Decisions {

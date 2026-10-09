@@ -42,6 +42,7 @@ type Config struct {
 	KickstartShortWindow bool   `yaml:"kickstart_short_window"`
 	KickstartModel       string `yaml:"kickstart_model"`
 	KickstartCooldown    string `yaml:"kickstart_cooldown"`
+	ErrorPenalty         bool   `yaml:"error_penalty"`
 }
 
 // Resolved is a validated configuration.
@@ -153,6 +154,7 @@ func Decode(raw []byte) (Resolved, error) {
 		}
 		policy.Warmup = *cfg.Warmup
 	}
+	policy.ErrorPenalty = cfg.ErrorPenalty
 
 	out.Options.Policy = policy
 	return out, nil

@@ -141,6 +141,20 @@ func (e *Engine) Cycle(obs []Observation, now time.Time) Report {
 	return rep
 }
 
+// Fold takes one tick's request outcomes into each listed account's error rate;
+// an account with no entry served nothing and decays. Only the ticker may call
+// it: the rate decays per fold, so folding on a refresh or a reload would let
+// those erase a penalty — and write the climb back — in seconds.
+func (e *Engine) Fold(tally map[string]Outcomes) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, o := range tally {
+		a := e.accounts[id]
+		a.ErrorRate = errorRate(a.ErrorRate, o)
+		e.accounts[id] = a
+	}
+}
+
 // Recheck folds one probe taken off the timer — in answer to a rejected request,
 // or because an exclusion fell due. Only exclusions may move there: re-pricing a
 // serving account would commit a bucket the timer never chose, and the next

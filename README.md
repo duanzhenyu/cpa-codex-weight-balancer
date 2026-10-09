@@ -130,6 +130,7 @@ plugins:
       kickstart_short_window: false  # same for the 5h window; changes no weight, recurs
       kickstart_model: gpt-5.6-sol   # Codex rejects its own smaller models here
       kickstart_cooldown: 1h # minimum 1m; shared by both switches
+      error_penalty: false   # discount by the account's own error rate; never below weight 1
       dry_run: false         # compute and report, write nothing
       # endpoint: https://chatgpt.com/backend-api/wham/usage   # must be https
 ```
@@ -177,6 +178,10 @@ that separates a usage hook the host never reaches from a fleet that is simply i
 `last_recheck` is when one was last probed off the timer. Rows show each account as it
 stands now, so an exclusion a recheck made appears before the next cycle;
 `weights_pending` and `weights_written` still describe the last cycle only.
+
+`error_penalty` echoes that switch. With it on, each row carries `error_rate`: the smoothed
+share of that credential's requests that failed for reasons of its own, as of the last
+scheduled cycle.
 
 `dormant_credentials` lists the auth indices whose weekly window has never started and
 `short_dormant_credentials` those whose five-hour window has not, and
@@ -268,6 +273,24 @@ detected but every nudge is being rejected".
   `Retry-After` or blind exponential backoff capped at 30 minutes, never from the
   `Reset-After-Seconds` sitting in that same response. A recheck whose probe fails is
   retried once, a minute later; a probe endpoint that stays down is left to the ticker.
+- **`error_penalty` discounts; it never excludes.** With it on, every request the host
+  reports on a Codex credential counts toward that credential's error rate, except a
+  failure that says nothing about the account: a 429 (the recheck path's), a client that
+  hung up (499), and a fault of the request itself — 400/409/413/422, or a body naming
+  `context_length_exceeded`, `previous_response_not_found` and the like, following the
+  host's own `IsRequestFault`. An image-generation tool call, which the host reports as
+  two served records of one attempt, counts once — unless another request's record on the
+  same credential lands between the two, which dilutes the rate rather than inflating it. Each scheduled cycle folds the rate as
+  `0.5 × previous + 0.5 × failures / max(requests, 10)`; `POST /refresh` and the cycle a
+  reload starts with price with the rate as it stands, because every fold halves it. The
+  weekly score is multiplied by `1 − rate` before bucketing, so hysteresis absorbs a stray
+  failure; an account failing everything sinks to weight 1 and keeps its sticky sessions.
+  A penalized account draws less traffic and
+  so less evidence; the decay is what lets it earn its weight back, and one burst of
+  errors costs roughly four or five consecutive cycles of writes on the way up. An
+  upstream outage penalizes the whole fleet alike — shares barely move, but every weight
+  does. The smoothing constants are unmeasured placeholders, and which failures Codex
+  actually produces has not been observed live.
 
 ## Requirements
 

@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+
+	"github.com/duanzhenyu/cpa-codex-weight-balancer/internal/codex"
 )
 
 // handleUsage records the quota an upstream Codex response reported, sparing
-// that credential a probe on the next cycle. It writes nothing: a reading moves
-// weights only on the ticker, because every weight change wipes the host's whole
-// smooth-WRR accumulator.
+// that credential a probe on the next cycle, and counts the request toward its
+// error rate. It writes nothing: both move weights only on the ticker, because
+// every weight change wipes the host's whole smooth-WRR accumulator.
 //
 // Anything it cannot use is dropped rather than reported. The host fuses a
 // plugin that fails on this hook, and there is no failure here worth losing
@@ -51,9 +53,13 @@ func handleUsage(request []byte) ([]byte, error) {
 	// credential through rate.Blocked to weight 0 — a hard exclusion that evicts
 	// its bound sticky sessions too — at request rate instead of on the timer.
 	if record.Failed || record.Failure.StatusCode >= 400 {
+		if codex.AccountFault(record.Failure.StatusCode, record.Failure.Body) {
+			worker.ctl.NoteOutcome(record.AuthIndex, true, record.RequestedAt)
+		}
 		return okEnvelope(map[string]any{})
 	}
 
+	worker.ctl.NoteOutcome(record.AuthIndex, false, record.RequestedAt)
 	worker.ctl.Observe(record.AuthIndex, record.ResponseHeaders, usageObservedAt(record))
 	return okEnvelope(map[string]any{})
 }

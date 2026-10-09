@@ -138,6 +138,7 @@ func pluginRegistration() registration {
 				{Name: "kickstart_short_window", Type: pluginapi.ConfigFieldTypeBoolean, Description: "五小时窗口从未启动过时，是否同样点火。独立开关，默认关闭。注意它不改变本插件算出的任何权重——短窗口只是可用性闸门，不参与打分；它换来的是该窗口提前起算、从而在后续爆发用量打满时更早重置。窗口每几小时自己过期，所以闲置账号会反复触发，按冷却计费。"},
 				{Name: "kickstart_model", Type: pluginapi.ConfigFieldTypeString, Description: "点火请求使用的模型。Codex 会拒绝自家更小的模型，留空则用默认的 gpt-5.6-sol。"},
 				{Name: "kickstart_cooldown", Type: pluginapi.ConfigFieldTypeString, Description: "同一账号两次点火的最短间隔，例如 1h，最小 1m。按尝试记账而非按成功——中途失败的请求可能已在上游计费。"},
+				{Name: "error_penalty", Type: pluginapi.ConfigFieldTypeBoolean, Description: "账号自身原因的失败请求（401/403/5xx/网络错误等；不含 429、客户端断开和请求本身的错误）是否压低该账号权重。按平滑错误率等比打折，只在探测周期上生效，最低降到 1、绝不排除。默认关闭。"},
 				{Name: "dry_run", Type: pluginapi.ConfigFieldTypeBoolean, Description: "空跑模式：照常探测并计算权重，但不写回任何凭据。首次部署建议开启。"},
 			},
 		},
@@ -253,14 +254,14 @@ func (w *worker) loop() {
 	recovery := time.NewTimer(time.Hour)
 	recovery.Stop()
 	defer recovery.Stop()
-	failed := w.cycle() != nil
+	failed := w.cycle(false) != nil
 	for {
 		w.arm(recovery, failed)
 		select {
 		case <-w.stop:
 			return
 		case <-ticker.C:
-			failed = w.cycle() != nil
+			failed = w.cycle(true) != nil
 		case <-w.wake:
 			failed = w.recheck() != nil
 		case <-recovery.C:
@@ -309,8 +310,14 @@ func (w *worker) recheck() error {
 	return nil
 }
 
-func (w *worker) cycle() error {
-	report, err := w.ctl.RunCycle(time.Now().UTC())
+// cycle runs one cycle; only a tick folds the request outcomes, because each
+// fold decays the error rate and a refresh or a reload must not.
+func (w *worker) cycle(tick bool) error {
+	run := w.ctl.RunCycle
+	if tick {
+		run = w.ctl.Tick
+	}
+	report, err := run(time.Now().UTC())
 	w.resultMu.Lock()
 	w.lastRun, w.lastRep, w.lastErr = time.Now().UTC(), report, ""
 	if err != nil {
@@ -347,7 +354,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	switch {
 	case strings.HasSuffix(req.Path, refreshPath) && req.Method == http.MethodPost:
-		worker.cycle()
+		worker.cycle(false)
 	case strings.HasSuffix(req.Path, statusPath):
 	default:
 		return okEnvelope(jsonResponse(http.StatusNotFound, map[string]any{"error": "unknown route"}))
@@ -401,6 +408,9 @@ func (w *worker) status() map[string]any {
 			if account.Bucket.Set {
 				row["bucket"] = account.Bucket.Index
 			}
+			if w.cfg.Options.Policy.ErrorPenalty {
+				row["error_rate"] = account.ErrorRate
+			}
 			if !account.RecoverAt.IsZero() {
 				row["recover_at"] = account.RecoverAt.Format(time.RFC3339)
 			}
@@ -431,6 +441,7 @@ func (w *worker) status() map[string]any {
 		"kickstart_short_window": w.cfg.Options.KickstartShortWindow,
 		"kickstart_model":        w.cfg.Options.KickstartModel,
 		"kickstarts_sent":        kicks.Sent,
+		"error_penalty":          w.cfg.Options.Policy.ErrorPenalty,
 	}
 	if len(weeklyDormant) > 0 {
 		out["dormant_credentials"] = weeklyDormant
