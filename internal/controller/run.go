@@ -46,6 +46,12 @@ func (c *Controller) run(now time.Time, fold bool) (balancer.Report, error) {
 		names[entry.AuthIndex] = name
 		observation, dormant := c.price(entry.AuthIndex, raw, observed, now)
 		observation.Disk = diskWeight(raw)
+		if c.opts.ResetCredits {
+			if errFetch := c.fetchResets(entry.AuthIndex, raw); errFetch != nil {
+				c.host.Log("warn", fmt.Sprintf("reset credits fetch failed for %s: %v", entry.AuthIndex, errFetch))
+			}
+		}
+		observation.Resets = c.resetWindows(entry.AuthIndex)
 		observations = append(observations, observation)
 		dormancy[entry.AuthIndex] = dormant
 		// A credential the host has taken out of service, or one that says
@@ -60,6 +66,7 @@ func (c *Controller) run(now time.Time, fold bool) (balancer.Report, error) {
 
 	c.kicks.observe(dormancy)
 	c.rechecks.list(listed)
+	c.resets.keep(listed)
 	if fold {
 		tally := c.outcomes.drain()
 		folded := make(map[string]balancer.Outcomes, len(listed))
@@ -166,18 +173,9 @@ func (c *Controller) price(authIndex string, raw []byte, observed map[string]cod
 // frozen observation rather than an error: one unreachable account must not
 // stop the fleet from being repriced.
 func (c *Controller) probe(authIndex string, raw []byte, now time.Time) (balancer.Observation, codex.Dormancy) {
-	token := credentialString(raw, "access_token")
-	if token == "" {
-		return failed(authIndex, errors.New("credential carries no access token")), codex.Dormancy{}
-	}
-	headers := map[string][]string{
-		"Authorization": {"Bearer " + token},
-		"Accept":        {"application/json"},
-		"Originator":    {Originator},
-		"User-Agent":    {UserAgent},
-	}
-	if accountID := credentialString(raw, "account_id"); accountID != "" {
-		headers["Chatgpt-Account-Id"] = []string{accountID}
+	headers, err := codexHeaders(raw)
+	if err != nil {
+		return failed(authIndex, err), codex.Dormancy{}
 	}
 
 	resp, err := c.host.HTTPDo(HTTPRequest{Method: "GET", URL: c.opts.Endpoint, Headers: headers})
@@ -193,6 +191,25 @@ func (c *Controller) probe(authIndex string, raw []byte, now time.Time) (balance
 		return failed(authIndex, err), codex.Dormancy{}
 	}
 	return c.observation(usage), usage.Dormant
+}
+
+// codexHeaders authenticates a read against the Codex backend as the
+// credential's own account.
+func codexHeaders(raw []byte) (map[string][]string, error) {
+	token := credentialString(raw, "access_token")
+	if token == "" {
+		return nil, errors.New("credential carries no access token")
+	}
+	headers := map[string][]string{
+		"Authorization": {"Bearer " + token},
+		"Accept":        {"application/json"},
+		"Originator":    {Originator},
+		"User-Agent":    {UserAgent},
+	}
+	if accountID := credentialString(raw, "account_id"); accountID != "" {
+		headers["Chatgpt-Account-Id"] = []string{accountID}
+	}
+	return headers, nil
 }
 
 // observation stamps a parsed quota with this cycle's generation and puts it in

@@ -132,6 +132,7 @@ func (c *Controller) Recheck(now time.Time) (balancer.Report, error) {
 		}
 	}
 	c.rechecks.list(listed)
+	c.resets.keep(listed)
 	var report balancer.Report
 	for _, entry := range entries {
 		id := entry.AuthIndex
@@ -175,6 +176,7 @@ func (c *Controller) Recheck(now time.Time) (balancer.Report, error) {
 			}
 		}
 		observation.Disk = diskWeight(raw)
+		observation.Resets = c.resetWindows(id)
 		decision, moved := c.engine.Recheck(observation, now)
 		if !moved {
 			continue

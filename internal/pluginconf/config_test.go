@@ -170,3 +170,12 @@ func TestErrorPenaltySwitch(t *testing.T) {
 		t.Fatal("error_penalty: true was not applied")
 	}
 }
+
+func TestResetCreditsSwitch(t *testing.T) {
+	if got := decode(t, ""); got.Options.ResetCredits {
+		t.Fatal("reset_credits must default off")
+	}
+	if got := decode(t, "reset_credits: true"); !got.Options.ResetCredits {
+		t.Fatal("reset_credits: true was not applied")
+	}
+}

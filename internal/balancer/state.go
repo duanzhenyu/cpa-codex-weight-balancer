@@ -49,6 +49,10 @@ type Observation struct {
 	// plugin — and a weight that vanished there is a credential the host is
 	// routing at its default of 1.
 	Disk DiskWeight
+	// Resets are the account's banked reset credits, each one full window in
+	// the snapshot's unit, due by its expiry. They come from their own endpoint,
+	// not from the snapshot's reading.
+	Resets []quota.Window
 }
 
 // Outcomes counts requests by result. Failures holds only those that reflect on
@@ -143,6 +147,13 @@ func (p Policy) evaluate(prev Account, obs Observation, now time.Time) (Account,
 
 	next.RecoverAt = time.Time{}
 	score := rate.Score
+	// Added only past the exclusion: a credit is quota the account holds once
+	// someone redeems it, and until then a spent window still answers 429.
+	for _, credit := range obs.Resets {
+		if s, ok := WindowScore(credit, now, p.Params); ok {
+			score += s
+		}
+	}
 	if p.ErrorPenalty {
 		score *= 1 - next.ErrorRate
 	}

@@ -110,6 +110,33 @@ Neither switch moves traffic. Weights only steer *new* sessions, so a warmed cre
 receives no cold binding still expires its week unused — as it would have anyway, minus the
 chance to compete for one.
 
+## Banked reset credits
+
+Codex grants accounts reset credits: each one, redeemed, restores both the weekly and the
+five-hour window, and each expires about 30 days after it was granted. A credit is a whole
+window of quota with a deadline of its own, so with `reset_credits: true` it is priced
+exactly like one and added to the weekly rate:
+
+```
+rate = weekly_remaining / max(time_to_reset, t_floor) ^ alpha
+     + Σ full_window   / max(time_to_expiry, t_floor) ^ alpha    (each unexpired credit)
+```
+
+An account with no credits prices as before; each credit adds its own term, and a credit
+nearer expiry adds more. The aim is to spend the account down while its credits are still
+redeemable. **The plugin never redeems one** — that is the operator's call, in the CPA
+management page, once the account is spent. Until then a spent window still answers 429,
+so the credits are added only after the exclusion check: credits never keep a spent
+account serving, and never take one to `weight: 0`.
+
+`/wham/usage` carries only the count and no response header carries them at all, so the
+switch costs one more token-bearing `GET /wham/rate-limit-reset-credits` per credential per
+cycle, whether or not the account was probed. Only credits that are `available`,
+supported by the plan, and of type `codex_rate_limits` count; one of those without a
+usable `expires_at` fails the whole fetch. A failed fetch keeps the last list rather than
+reading as none, which would reprice the account. Rechecks price
+from that list without fetching, and it survives a configuration reload.
+
 ## Configuration
 
 ```yaml
@@ -131,6 +158,7 @@ plugins:
       kickstart_model: gpt-5.6-sol   # Codex rejects its own smaller models here
       kickstart_cooldown: 1h # minimum 1m; shared by both switches
       error_penalty: false   # discount by the account's own error rate; never below weight 1
+      reset_credits: false   # price banked reset credits as extra windows; one more request per account per cycle
       dry_run: false         # compute and report, write nothing
       # endpoint: https://chatgpt.com/backend-api/wham/usage   # must be https
 ```
@@ -182,6 +210,11 @@ stands now, so an exclusion a recheck made appears before the next cycle;
 `error_penalty` echoes that switch. With it on, each row carries `error_rate`: the smoothed
 share of that credential's requests that failed for reasons of its own, as of the last
 scheduled cycle.
+
+`reset_credits` echoes that switch. With it on, each row carries `reset_credits`, the
+unexpired credits held, `reset_credit_next_expiry` when there is one, and
+`reset_credits_error` while the last fetch for that credential failed. Credit ids are
+never shown.
 
 `dormant_credentials` lists the auth indices whose weekly window has never started and
 `short_dormant_credentials` those whose five-hour window has not, and
@@ -291,6 +324,14 @@ detected but every nudge is being rejected".
   upstream outage penalizes the whole fleet alike — shares barely move, but every weight
   does. The smoothing constants are unmeasured placeholders, and which failures Codex
   actually produces has not been observed live.
+- **`reset_credits` has an endgame.** At `alpha = 1` one credit alone prices at 2.3× a
+  fresh week three days before expiry, 7× a day before, 168× an hour before, and 672× at
+  the default `t_floor`. In that last day the account's bucket moves often, and every move wipes the
+  host's routing accumulator fleet-wide; the account may also spend its five-hour window
+  and be excluded, sticky sessions with it. The weekly window has the same shape near
+  its reset — this adds one such endgame per credit. A redeemed credit lingers in the
+  price for up to one cycle. What `applicable_available_count` in `/wham/usage` means is
+  unknown, so it is not used.
 
 ## Requirements
 

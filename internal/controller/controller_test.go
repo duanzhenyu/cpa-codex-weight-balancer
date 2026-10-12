@@ -39,9 +39,14 @@ type fakeHost struct {
 	// failure modes: the probe can be healthy while a kickstart is rejected.
 	kickStatus int
 	kickErr    error
-	requests   []HTTPRequest
-	gets       []string
-	logs       []string
+	// resets answers the reset-credits endpoint by access token; a token with
+	// no entry holds no credits.
+	resets       map[string]string
+	resetsStatus int
+	resetsErr    error
+	requests     []HTTPRequest
+	gets         []string
+	logs         []string
 	// onGet fires before returning a credential, to simulate a concurrent write.
 	onGet func(authIndex string, call int)
 }
@@ -105,6 +110,19 @@ func (h *fakeHost) HTTPDo(req HTTPRequest) (HTTPResponse, error) {
 		}
 		return HTTPResponse{StatusCode: status}, nil
 	}
+	if req.URL == ResetCreditsEndpoint {
+		if h.resetsErr != nil {
+			return HTTPResponse{}, h.resetsErr
+		}
+		status, body := h.resetsStatus, `{"credits":[]}`
+		if status == 0 {
+			status = 200
+		}
+		if held, ok := h.resets[strings.TrimPrefix(req.Headers["Authorization"][0], "Bearer ")]; ok {
+			body = held
+		}
+		return HTTPResponse{StatusCode: status, Body: []byte(body)}, nil
+	}
 	if h.httpErr != nil {
 		return HTTPResponse{}, h.httpErr
 	}
@@ -117,6 +135,16 @@ func (h *fakeHost) byMethod(method string) []HTTPRequest {
 	var out []HTTPRequest
 	for _, r := range h.requests {
 		if r.Method == method {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (h *fakeHost) byURL(url string) []HTTPRequest {
+	var out []HTTPRequest
+	for _, r := range h.requests {
+		if r.URL == url {
 			out = append(out, r)
 		}
 	}

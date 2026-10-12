@@ -139,6 +139,7 @@ func pluginRegistration() registration {
 				{Name: "kickstart_model", Type: pluginapi.ConfigFieldTypeString, Description: "点火请求使用的模型。Codex 会拒绝自家更小的模型，留空则用默认的 gpt-5.6-sol。"},
 				{Name: "kickstart_cooldown", Type: pluginapi.ConfigFieldTypeString, Description: "同一账号两次点火的最短间隔，例如 1h，最小 1m。按尝试记账而非按成功——中途失败的请求可能已在上游计费。"},
 				{Name: "error_penalty", Type: pluginapi.ConfigFieldTypeBoolean, Description: "账号自身原因的失败请求（401/403/5xx/网络错误等；不含 429、客户端断开和请求本身的错误）是否压低该账号权重。按平滑错误率等比打折，只在探测周期上生效，最低降到 1、绝不排除。默认关闭。"},
+				{Name: "reset_credits", Type: pluginapi.ConfigFieldTypeBoolean, Description: "是否把账号攒下的主动重置次数计入权重。每张未过期的重置券按「一整个周窗口、期限为其到期时间」叠加打分：券越多、越快到期，权重越高，好让该号先被用完再兑换。插件不会自动兑换。额度已耗尽的号有券也照样排除。开启后每轮每个号多一次带 token 的请求。默认关闭。"},
 				{Name: "dry_run", Type: pluginapi.ConfigFieldTypeBoolean, Description: "空跑模式：照常探测并计算权重，但不写回任何凭据。首次部署建议开启。"},
 			},
 		},
@@ -215,6 +216,7 @@ func reconfigure(request []byte) error {
 		// far more often than that cooldown is long.
 		next.ctl.RestoreKickstarts(previous.ctl.Kickstarts())
 		next.ctl.RestoreRechecks(previous.ctl.Rechecks())
+		next.ctl.RestoreResetCredits(previous.ctl.ResetCredits())
 	}
 	current = next
 	go next.loop()
@@ -386,6 +388,8 @@ func (w *worker) status() map[string]any {
 	slices.Sort(shortDormant)
 
 	accounts := w.ctl.Engine().Accounts()
+	resets := w.ctl.ResetCredits()
+	now := time.Now()
 	rows := make([]map[string]any, 0, len(report.Decisions))
 	for _, d := range report.Decisions {
 		row := map[string]any{
@@ -415,6 +419,21 @@ func (w *worker) status() map[string]any {
 				row["recover_at"] = account.RecoverAt.Format(time.RFC3339)
 			}
 		}
+		if w.cfg.Options.ResetCredits {
+			held := 0
+			for _, expiry := range resets.Held[d.AuthID] {
+				if expiry.After(now) {
+					if held == 0 {
+						row["reset_credit_next_expiry"] = expiry.Format(time.RFC3339)
+					}
+					held++
+				}
+			}
+			row["reset_credits"] = held
+			if err := resets.Errors[d.AuthID]; err != "" {
+				row["reset_credits_error"] = err
+			}
+		}
 		rows = append(rows, row)
 	}
 
@@ -442,6 +461,7 @@ func (w *worker) status() map[string]any {
 		"kickstart_model":        w.cfg.Options.KickstartModel,
 		"kickstarts_sent":        kicks.Sent,
 		"error_penalty":          w.cfg.Options.Policy.ErrorPenalty,
+		"reset_credits":          w.cfg.Options.ResetCredits,
 	}
 	if len(weeklyDormant) > 0 {
 		out["dormant_credentials"] = weeklyDormant

@@ -14,6 +14,11 @@ import (
 // so it stays configurable.
 const UsageEndpoint = "https://chatgpt.com/backend-api/wham/usage"
 
+// ResetCreditsEndpoint lists an account's banked reset credits with their
+// expiries, verified live. /wham/usage carries only their count, and no response
+// header carries them at all.
+const ResetCreditsEndpoint = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+
 // Codex client identification, mirroring what the host sends on codex calls.
 const (
 	UserAgent  = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
@@ -78,6 +83,11 @@ type Options struct {
 	KickstartShortWindow bool
 	KickstartModel       string
 	KickstartCooldown    time.Duration
+	// ResetCredits prices each banked reset credit as one more full window due
+	// by its expiry. It costs one more token-bearing request per credential per
+	// cycle, and it redeems nothing: the credit pays off only if someone
+	// redeems it once the account is spent.
+	ResetCredits bool
 }
 
 // Controller owns the engine and the host wiring.
@@ -102,6 +112,8 @@ type Controller struct {
 	rechecks rechecks
 	// outcomes counts each credential's requests since the last tick.
 	outcomes outcomes
+	// resets holds each credential's banked reset credits.
+	resets resetCredits
 }
 
 // New builds a controller.
