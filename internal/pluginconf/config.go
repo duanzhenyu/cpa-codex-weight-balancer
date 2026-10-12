@@ -43,6 +43,7 @@ type Config struct {
 	KickstartModel       string `yaml:"kickstart_model"`
 	KickstartCooldown    string `yaml:"kickstart_cooldown"`
 	ErrorPenalty         bool   `yaml:"error_penalty"`
+	ErrorWindow          string `yaml:"error_window"`
 	ResetCredits         bool   `yaml:"reset_credits"`
 }
 
@@ -156,6 +157,17 @@ func Decode(raw []byte) (Resolved, error) {
 		policy.Warmup = *cfg.Warmup
 	}
 	policy.ErrorPenalty = cfg.ErrorPenalty
+	// The default stretches to a long interval so configs that predate the
+	// window keep loading.
+	if policy.ErrorWindow, err = duration(cfg.ErrorWindow, max(balancer.DefaultErrorWindow, out.Interval), "error_window"); err != nil {
+		return Resolved{}, err
+	}
+	// A shorter window holds only the latest tick's tally, and a rate that swings
+	// with every tick moves a bucket — and wipes the host's accumulator — far
+	// more often.
+	if policy.ErrorWindow < out.Interval {
+		return Resolved{}, fmt.Errorf("error_window %s is shorter than interval %s: it would hold only the latest cycle's requests", policy.ErrorWindow, out.Interval)
+	}
 	out.Options.ResetCredits = cfg.ResetCredits
 
 	out.Options.Policy = policy

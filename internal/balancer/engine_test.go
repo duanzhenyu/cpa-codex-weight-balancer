@@ -226,6 +226,17 @@ func TestCycleAndAccountsAreSafeInParallel(t *testing.T) {
 		func(i int) {
 			e.Recheck(obsFor("b", 500, 7*24*time.Hour, 0, time.Hour, now), now.Add(time.Duration(i)*time.Second))
 		},
+		func(i int) {
+			e.Fold(map[string]Outcomes{"a": {Requests: 2, Failures: i % 2}}, now.Add(time.Duration(i)*time.Hour))
+		},
+		func(int) {
+			// The window is handed out by reference; reading it must not race a fold.
+			for _, a := range e.Accounts() {
+				for _, s := range a.Errors {
+					_ = s.Failures
+				}
+			}
+		},
 	} {
 		wg.Add(1)
 		go func(work func(int)) {

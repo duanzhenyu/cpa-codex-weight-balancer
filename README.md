@@ -158,6 +158,7 @@ plugins:
       kickstart_model: gpt-5.6-sol   # Codex rejects its own smaller models here
       kickstart_cooldown: 1h # minimum 1m; shared by both switches
       error_penalty: false   # discount by the account's own error rate; never below weight 1
+      error_window: 12h      # how far back that rate looks; at least interval
       reset_credits: false   # price banked reset credits as extra windows; one more request per account per cycle
       dry_run: false         # compute and report, write nothing
       # endpoint: https://chatgpt.com/backend-api/wham/usage   # must be https
@@ -207,9 +208,9 @@ that separates a usage hook the host never reaches from a fleet that is simply i
 stands now, so an exclusion a recheck made appears before the next cycle;
 `weights_pending` and `weights_written` still describe the last cycle only.
 
-`error_penalty` echoes that switch. With it on, each row carries `error_rate`: the smoothed
-share of that credential's requests that failed for reasons of its own, as of the last
-scheduled cycle.
+`error_penalty` and `error_window` echo those settings. With the switch on, each row carries
+`error_rate`: `failures / max(requests, 10)` over that credential's window, counting only
+failures for reasons of its own, as of the last scheduled cycle.
 
 `reset_credits` echoes that switch. With it on, each row carries `reset_credits`, the
 unexpired credits held, `reset_credit_next_expiry` when there is one, and
@@ -313,16 +314,24 @@ detected but every nudge is being rejected".
   `context_length_exceeded`, `previous_response_not_found` and the like, following the
   host's own `IsRequestFault`. An image-generation tool call, which the host reports as
   two served records of one attempt, counts once — unless another request's record on the
-  same credential lands between the two, which dilutes the rate rather than inflating it. Each scheduled cycle folds the rate as
-  `0.5 × previous + 0.5 × failures / max(requests, 10)`; `POST /refresh` and the cycle a
-  reload starts with price with the rate as it stands, because every fold halves it. The
-  weekly score is multiplied by `1 − rate` before bucketing, so hysteresis absorbs a stray
-  failure; an account failing everything sinks to weight 1 and keeps its sticky sessions.
-  A penalized account draws less traffic and
-  so less evidence; the decay is what lets it earn its weight back, and one burst of
-  errors costs roughly four or five consecutive cycles of writes on the way up. An
-  upstream outage penalizes the whole fleet alike — shares barely move, but every weight
-  does. The smoothing constants are unmeasured placeholders, and which failures Codex
+  same credential lands between the two, which dilutes the rate rather than inflating it. Each scheduled cycle folds its
+  tally, stamped with the cycle's time, into a sliding window (`error_window`: default 12h,
+  or `interval` if that is longer; never shorter than `interval`) and sets the rate to
+  `failures / max(requests, 10)` summed over the window. A tally drops out at the first
+  scheduled cycle a full window after it was folded. `POST /refresh` and the cycle a reload
+  starts with price with the rate as it stands; only the ticker folds. The weekly score is
+  multiplied by `1 − rate` before bucketing, so hysteresis absorbs a stray failure; an
+  account failing everything sinks to weight 1 and keeps its sticky sessions. A penalized
+  account draws less traffic and so less evidence: clean requests dilute a burst only
+  gradually, and the penalty lifts in full once the burst leaves the window. The long
+  memory costs writes. In a simulation at the defaults with 20 requests a cycle, four
+  cycles of nothing but failures followed by clean traffic took 11 writes on the way back
+  up, four of them in the first hour. An idle account moves only as samples expire: once
+  for a burst of nothing but failures, up to once per expiring sample when the window holds
+  fewer than 10 requests. The window lives in memory: a reload carries it over but drops
+  the counts not yet folded, and a restart of the host clears it. An upstream outage
+  penalizes the whole fleet alike — shares barely move, but every weight does. The window
+  length and the floor of 10 requests are unmeasured placeholders, and which failures Codex
   actually produces has not been observed live.
 - **`reset_credits` has an endgame.** At `alpha = 1` one credit alone prices at 2.3× a
   fresh week three days before expiry, 7× a day before, 168× an hour before, and 672× at

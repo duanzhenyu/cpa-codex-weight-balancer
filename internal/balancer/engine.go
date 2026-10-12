@@ -63,6 +63,11 @@ type Engine struct {
 
 // NewEngine returns an engine driven by p.
 func NewEngine(p Policy) *Engine {
+	// A zero window would keep only the latest tick and lift any penalty on the
+	// next quiet one.
+	if p.ErrorWindow <= 0 {
+		p.ErrorWindow = DefaultErrorWindow
+	}
 	return &Engine{
 		Policy:   p,
 		accounts: map[string]Account{},
@@ -141,16 +146,26 @@ func (e *Engine) Cycle(obs []Observation, now time.Time) Report {
 	return rep
 }
 
-// Fold takes one tick's request outcomes into each listed account's error rate;
-// an account with no entry served nothing and decays. Only the ticker may call
-// it: the rate decays per fold, so folding on a refresh or a reload would let
-// those erase a penalty — and write the climb back — in seconds.
-func (e *Engine) Fold(tally map[string]Outcomes) {
+// Fold takes one tick's request outcomes into each listed account's error
+// window, drops what has aged out of it, and recomputes the rate; a listed
+// account that served nothing still ages. Only the ticker calls it, so a refresh
+// or the cycle a reload starts with prices with the rate the last tick settled.
+func (e *Engine) Fold(tally map[string]Outcomes, now time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	since := now.Add(-e.Policy.ErrorWindow)
 	for id, o := range tally {
 		a := e.accounts[id]
-		a.ErrorRate = errorRate(a.ErrorRate, o)
+		var window []Sample
+		for _, s := range a.Errors {
+			if s.At.After(since) {
+				window = append(window, s)
+			}
+		}
+		if o.Requests > 0 {
+			window = append(window, Sample{At: now, Outcomes: o})
+		}
+		a.Errors, a.ErrorRate = window, errorRate(window)
 		e.accounts[id] = a
 	}
 }

@@ -59,12 +59,24 @@ func TestOutcomesFeedTheNextCycleOnce(t *testing.T) {
 		t.Fatalf("tally %+v", got)
 	}
 	tick(t, c, 1)
-	errorRateOf(t, c, "a", 0.15)
+	errorRateOf(t, c, "a", 0.3)
 	if n := len(c.Outcomes()); n != 0 {
 		t.Fatalf("%d tallies left after the tick, want them consumed", n)
 	}
+	note(c, "a", 10, 0)
 	tick(t, c, 1)
-	errorRateOf(t, c, "a", 0.075)
+	errorRateOf(t, c, "a", 0.15)
+}
+
+func TestTicksAgeErrorsOutOfTheWindow(t *testing.T) {
+	c := penaltyCtl(newFakeHost())
+	note(c, "a", 10, 10)
+	tick(t, c, 1)
+	errorRateOf(t, c, "a", 1)
+	if _, err := c.Tick(now.Add(balancer.DefaultErrorWindow)); err != nil {
+		t.Fatal(err)
+	}
+	errorRateOf(t, c, "a", 0)
 }
 
 func TestOutcomesWithoutAnAuthIndexAreDropped(t *testing.T) {
@@ -76,13 +88,13 @@ func TestOutcomesWithoutAnAuthIndexAreDropped(t *testing.T) {
 
 func TestOutcomesSurviveAFailedCredentialRead(t *testing.T) {
 	// The tally says nothing about the credential file. Dropping it because the
-	// read failed would decay the rate of an account that is failing requests.
+	// read failed would hide the failures of an account that is failing requests.
 	h := newFakeHost()
 	h.getErr["a"] = errors.New("read failed")
 	c := penaltyCtl(h)
 	note(c, "a", 10, 10)
 	tick(t, c, 1)
-	errorRateOf(t, c, "a", 0.5)
+	errorRateOf(t, c, "a", 1)
 }
 
 func TestOutcomesOfUnlistedCredentialsAreDiscarded(t *testing.T) {
@@ -99,9 +111,8 @@ func TestOutcomesOfUnlistedCredentialsAreDiscarded(t *testing.T) {
 }
 
 func TestOnlyATickConsumesOutcomes(t *testing.T) {
-	// The rate halves on every fold. A refresh or the cycle a reload starts with
-	// folding too would let an operator erase a penalty — and write the climb
-	// back up — in a few seconds.
+	// A refresh and the cycle a reload starts with price with the rate the last
+	// scheduled cycle settled; the tally waits for the ticker.
 	h := newFakeHost()
 	c := penaltyCtl(h)
 	note(c, "a", 10, 10)
@@ -111,7 +122,7 @@ func TestOnlyATickConsumesOutcomes(t *testing.T) {
 		t.Fatalf("tally %+v, want it left for the tick", got)
 	}
 	tick(t, c, 1)
-	errorRateOf(t, c, "a", 0.5)
+	errorRateOf(t, c, "a", 1)
 }
 
 func TestARequestReportedTwiceCountsOnce(t *testing.T) {

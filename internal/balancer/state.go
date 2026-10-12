@@ -33,9 +33,18 @@ type Account struct {
 	LastGood  time.Time
 	RecoverAt time.Time
 	Stale     bool
-	// ErrorRate is the smoothed share of the account's requests that failed for
-	// reasons of its own. Only Engine.Fold moves it.
+	// ErrorRate is the share of the account's requests within the error window
+	// that failed for reasons of its own. Only Engine.Fold moves it.
 	ErrorRate float64
+	// Errors are the window's tallies, oldest first. Fold replaces the slice
+	// rather than editing it: Accounts hands out shallow copies.
+	Errors []Sample
+}
+
+// Sample is one tick's outcomes, stamped with the tick that folded them.
+type Sample struct {
+	At time.Time
+	Outcomes
 }
 
 // Observation is one probe outcome for one account.
@@ -82,30 +91,30 @@ type Policy struct {
 	Freshness time.Duration
 	// ErrorPenalty discounts the score by the account's error rate.
 	ErrorPenalty bool
+	// ErrorWindow is how far back the error rate looks. A penalized account
+	// draws less traffic and so less evidence; its errors leaving the window is
+	// what lets it earn its weight back.
+	ErrorWindow time.Duration
 }
 
 const (
-	DefaultWarmup    = 2
-	DefaultFreshness = 90 * time.Minute
+	DefaultWarmup      = 2
+	DefaultFreshness   = 90 * time.Minute
+	DefaultErrorWindow = 12 * time.Hour
 )
 
-const (
-	// errorPrior is the fewest requests a cycle's error rate is taken over, so a
-	// single failure on an idle account does not read as all of its traffic.
-	errorPrior = 10
-	// errorDecay is the share of the previous rate a cycle keeps. A penalized
-	// account draws less traffic and so less evidence; decaying is what lets it
-	// earn its weight back.
-	errorDecay = 0.5
-)
+// errorPrior is the fewest requests the window's error rate is taken over, so a
+// single failure on an idle account does not read as all of its traffic.
+const errorPrior = 10
 
 // DefaultPolicy returns the documented starting configuration.
 func DefaultPolicy() Policy {
 	return Policy{
-		Quantizer: DefaultQuantizer(),
-		Params:    Params{TFloor: DefaultTFloor, Alpha: DefaultAlpha},
-		Warmup:    DefaultWarmup,
-		Freshness: DefaultFreshness,
+		Quantizer:   DefaultQuantizer(),
+		Params:      Params{TFloor: DefaultTFloor, Alpha: DefaultAlpha},
+		Warmup:      DefaultWarmup,
+		Freshness:   DefaultFreshness,
+		ErrorWindow: DefaultErrorWindow,
 	}
 }
 
@@ -175,9 +184,13 @@ func (p Policy) evaluate(prev Account, obs Observation, now time.Time) (Account,
 	return next, rate, nil
 }
 
-func errorRate(prev float64, o Outcomes) float64 {
-	cycle := float64(o.Failures) / float64(max(o.Requests, errorPrior))
-	return errorDecay*prev + (1-errorDecay)*cycle
+func errorRate(window []Sample) float64 {
+	var sum Outcomes
+	for _, s := range window {
+		sum.Requests += s.Requests
+		sum.Failures += s.Failures
+	}
+	return float64(sum.Failures) / float64(max(sum.Requests, errorPrior))
 }
 
 // freeze holds the last committed weight. A transient probe failure must never

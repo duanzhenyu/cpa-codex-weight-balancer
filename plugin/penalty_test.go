@@ -95,6 +95,11 @@ func TestErrorPenaltyIsAdvertisedAndReported(t *testing.T) {
 	}) {
 		t.Fatal("error_penalty is not advertised")
 	}
+	if !slices.ContainsFunc(reg.Metadata.ConfigFields, func(f pluginapi.ConfigField) bool {
+		return f.Name == "error_window" && f.Type == pluginapi.ConfigFieldTypeString
+	}) {
+		t.Fatal("error_window is not advertised")
+	}
 
 	for yaml, on := range map[string]bool{"interval: 15m\nerror_penalty: true": true, "interval: 15m": false} {
 		cfg := decode(t, yaml)
@@ -105,6 +110,9 @@ func TestErrorPenaltyIsAdvertisedAndReported(t *testing.T) {
 		out := w.status()
 		if out["error_penalty"] != on {
 			t.Fatalf("%q: error_penalty = %v", yaml, out["error_penalty"])
+		}
+		if out["error_window"] != "12h0m0s" {
+			t.Fatalf("%q: error_window = %v", yaml, out["error_window"])
 		}
 		rate, shown := out["credentials"].([]map[string]any)[0]["error_rate"]
 		if shown != on || (on && rate != 0.25) {
@@ -159,8 +167,8 @@ func listed(t *testing.T, h faultyHost) {
 }
 
 func TestOnlyTheTickerFoldsOutcomes(t *testing.T) {
-	// The rate halves on every fold, so the cycle a reload starts with and an
-	// operator's refresh must price with it rather than consume it.
+	// The cycle a reload starts with and an operator's refresh price with the
+	// rate as it stands rather than consume the tally.
 	w, h := faultyWorker(t, 15*time.Minute)
 	mu.Lock()
 	current = w

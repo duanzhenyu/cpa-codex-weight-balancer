@@ -171,6 +171,27 @@ func TestErrorPenaltySwitch(t *testing.T) {
 	}
 }
 
+func TestErrorWindow(t *testing.T) {
+	if got := decode(t, "").Options.Policy.ErrorWindow; got != balancer.DefaultErrorWindow {
+		t.Fatalf("error_window %v, want %v by default", got, balancer.DefaultErrorWindow)
+	}
+	if got := decode(t, "error_window: 6h").Options.Policy.ErrorWindow; got != 6*time.Hour {
+		t.Fatalf("error_window %v, want 6h", got)
+	}
+	if got := decode(t, "interval: 30m\nerror_window: 30m").Options.Policy.ErrorWindow; got != 30*time.Minute {
+		t.Fatalf("error_window %v: a window of one interval must be accepted", got)
+	}
+	// Configs written before the window existed must keep loading.
+	if got := decode(t, "interval: 24h").Options.Policy.ErrorWindow; got != 24*time.Hour {
+		t.Fatalf("error_window %v with a 24h interval, want it stretched to one interval", got)
+	}
+	for _, yaml := range []string{"error_window: soon", "error_window: 10m", "interval: 30m\nerror_window: 20m"} {
+		if _, err := Decode([]byte(yaml)); err == nil {
+			t.Fatalf("%q was accepted", yaml)
+		}
+	}
+}
+
 func TestResetCreditsSwitch(t *testing.T) {
 	if got := decode(t, ""); got.Options.ResetCredits {
 		t.Fatal("reset_credits must default off")

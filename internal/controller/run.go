@@ -73,7 +73,7 @@ func (c *Controller) run(now time.Time, fold bool) (balancer.Report, error) {
 		for id := range listed {
 			folded[id] = tally[id]
 		}
-		c.engine.Fold(folded)
+		c.engine.Fold(folded, now)
 	}
 
 	report := c.engine.Cycle(observations, now)

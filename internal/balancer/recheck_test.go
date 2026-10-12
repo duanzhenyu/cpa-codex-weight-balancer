@@ -2,6 +2,7 @@ package balancer
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ func TestRecheckLeavesAServingAccountUntouched(t *testing.T) {
 	if d, ok := e.Recheck(moved, now); ok {
 		t.Fatalf("got %+v, want a serving account left alone", d)
 	}
-	if after := e.Accounts()["a"]; after != before {
+	if after := e.Accounts()["a"]; !reflect.DeepEqual(after, before) {
 		t.Fatalf("state moved %+v -> %+v", before, after)
 	}
 
