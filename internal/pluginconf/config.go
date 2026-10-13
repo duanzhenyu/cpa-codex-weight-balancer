@@ -17,7 +17,7 @@ import (
 // DefaultInterval matches the design doc: tens of minutes, not every minute.
 const DefaultInterval = 15 * time.Minute
 
-// MinInterval floors the probe cadence. Every weight change wipes the host's
+// MinInterval floors the reweight cadence. Every weight change wipes the host's
 // smooth-WRR accumulator fleet-wide, so a fast cadence degrades routing into
 // "always pick the largest weight" — see the design doc, §5.4 constraint 1.
 const MinInterval = time.Minute

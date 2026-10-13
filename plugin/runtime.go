@@ -125,7 +125,7 @@ func pluginRegistration() registration {
 			Author:           pluginAuthor,
 			GitHubRepository: pluginRepo,
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "interval", Type: pluginapi.ConfigFieldTypeString, Description: "探测间隔，例如 15m。每次权重变动都会清空宿主全队列的路由累加器，务必保持在几十分钟量级。最小 1m。"},
+				{Name: "interval", Type: pluginapi.ConfigFieldTypeString, Description: "重新定权周期，例如 15m。每轮用请求顺带上报的额度重算权重并写回，没有上报的号才主动探测。每次权重变动都会清空宿主全队列的路由累加器，务必保持在几十分钟量级。最小 1m。"},
 				{Name: "endpoint", Type: pluginapi.ConfigFieldTypeString, Description: "额度探测地址。必须是 https —— 每次探测都带着凭据的 access_token。留空则用默认的 Codex usage 端点。"},
 				{Name: "quota_capacity", Type: pluginapi.ConfigFieldTypeNumber, Description: "套餐总量，把 used_percent 与观测消耗换算成绝对单位。它是全队伍共用的一个值，不能让不同套餐变得可比，也不改变路由比例。"},
 				{Name: "alpha", Type: pluginapi.ConfigFieldTypeNumber, Description: "紧迫度指数。1 表示按周窗口的 deadline 匀速配速；0 表示只看剩余额度、不管刷新时间；大于 1 则更偏向快要刷新的账号。"},

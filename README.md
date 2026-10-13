@@ -146,7 +146,7 @@ plugins:
   configs:
     cpa-codex-weight-balancer:
       enabled: true          # the instance switch; the host defaults it off
-      interval: 15m          # probe cadence; minimum 1m
+      interval: 15m          # reweight cycle; minimum 1m
       alpha: 1               # urgency exponent
       t_floor: 15m           # lower clamp on time-to-reset
       bucket_q: 0.08         # relative width of one weight bucket
