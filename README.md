@@ -1,5 +1,7 @@
 # CPA Codex Weight Balancer
 
+**English** | [简体中文](README.zh-CN.md)
+
 A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that keeps Codex
 credential weights in step with each account's remaining weekly quota **and how soon
 that quota expires**, so the host's `weighted-round-robin` selector spreads new sessions
