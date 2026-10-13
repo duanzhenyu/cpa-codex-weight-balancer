@@ -388,7 +388,7 @@ Manually: download your platform's zip and `checksums.txt` from
 `sha256sum --ignore-missing -c checksums.txt`, then unzip the library (`.so`, `.dll` or
 `.dylib`) into your `plugins.dir`, optionally under `<goos>/<goarch>/`. The plugin ID is
 the filename minus the extension and an optional `-v<version>` suffix, so
-`cpa-codex-weight-balancer.so` and `cpa-codex-weight-balancer-v0.7.0.so` both work —
+`cpa-codex-weight-balancer.so` and `cpa-codex-weight-balancer-v0.7.1.so` both work —
 anything else renames the plugin.
 Under Docker, put `plugins.dir` on a mounted volume: the default `"plugins"` is
 relative to the container's working directory, which does not survive a rebuild.
