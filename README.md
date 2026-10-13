@@ -356,20 +356,38 @@ detected but every nudge is being rejected".
   management response.
 - `routing.strategy: "weighted-round-robin"`. Under any other strategy the host never
   reads the weights and this plugin does nothing.
-- Released binaries are `linux/amd64` and need **glibc ≥ 2.34**, measured inside the
-  container that runs CPA rather than on the Docker host. Other platforms and older
-  glibc must build from source.
+- One of the released platforms:
+
+  | Platform | Needs | Loaded before publishing by | Also run in |
+  |---|---|---|---|
+  | `linux/amd64` | glibc ≥ 2.17 | `tools/loadcheck` | CPA 8.0.27 |
+  | `linux/arm64` | glibc ≥ 2.17 | `tools/loadcheck` on an arm64 runner | — |
+  | `windows/amd64` | — | `tools/loadcheck` on a Windows runner | — |
+  | `darwin/arm64` | macOS ≥ 12 (CPA itself needs 15) | `tools/loadcheck` | CPA 8.0.27 |
+
+  glibc 2.17 is the baseline CPA's own Linux build targets; measure it inside the
+  container that runs CPA, not on the Docker host. `tools/loadcheck` loads the library
+  the way the host does, registers it, runs one dry-run cycle whose calls back into the
+  host land in Go and grow the stack there, and shuts it down — the ABI crossings,
+  without the rest of the host.
+- **No `darwin/amd64`.** Go keeps the current goroutine in a fixed TLS slot there
+  (`0x30(GS)`), so a Go plugin and a Go host overwrite each other's. CPA 8.0.27 under
+  Rosetta crashes on the first plugin call that grows a stack, with this plugin and with
+  others from the store; a native Intel Mac is untested. Go does not support loading a
+  `c-shared` Go library into a Go program on Darwin or Windows at all (golang/go#29061,
+  #49457), so for those platforms the table is the whole claim.
 
 ## Install
 
 From the plugin store: Management Center → Plugins → install `cpa-codex-weight-balancer`.
 
-Manually: download the zip and `checksums.txt` from
+Manually: download your platform's zip and `checksums.txt` from
 [Releases](https://github.com/duanzhenyu/cpa-codex-weight-balancer/releases), run
-`sha256sum -c checksums.txt`, then unzip the `.so` into your `plugins.dir`, optionally
-under `<goos>/<goarch>/`. The plugin ID is the filename minus the extension and an
-optional `-v<version>` suffix, so `cpa-codex-weight-balancer.so` and
-`cpa-codex-weight-balancer-v0.7.0.so` both work — anything else renames the plugin.
+`sha256sum --ignore-missing -c checksums.txt`, then unzip the library (`.so`, `.dll` or
+`.dylib`) into your `plugins.dir`, optionally under `<goos>/<goarch>/`. The plugin ID is
+the filename minus the extension and an optional `-v<version>` suffix, so
+`cpa-codex-weight-balancer.so` and `cpa-codex-weight-balancer-v0.7.0.so` both work —
+anything else renames the plugin.
 Under Docker, put `plugins.dir` on a mounted volume: the default `"plugins"` is
 relative to the container's working directory, which does not survive a rebuild.
 Overwriting a library already loaded at the same path needs a restart.
@@ -381,10 +399,15 @@ Then enable it and give it a first, write-free run with `dry_run: true`.
 ```sh
 make            # vet, test, build for the host platform
 make release    # zip named <id>_<version>_<goos>_<goarch>.zip, library at the zip root
-make checksums
+make dist       # release zips for every platform above, plus checksums.txt
 ```
 
-Requires CGO. Cross-compiling needs a matching C toolchain per target.
+Requires CGO. `make dist` also needs GNU userland and a Docker that can run
+`linux/amd64` images. It builds Linux and Windows in Docker (`scripts/Dockerfile`; zig
+pins the glibc baseline) and `darwin/arm64` on an Apple Silicon Mac over SSH
+(`MAC_HOST`, default `macbook`; `MAC_PROXY` if downloads there need one), and loads
+each library it can run. Upload them to a draft release, then run
+`.github/workflows/verify-release.yml` on it to load the other two.
 
 ## License
 

@@ -1,0 +1,80 @@
+# Loads the linux/arm64 and windows/amd64 libraries of a release on native
+# runners. scripts/dist.sh builds them, but neither the build machine nor the
+# Mac can run these two. Run it on the draft before publishing.
+name: verify-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, e.g. v0.7.1
+        required: true
+
+# Only users with push access can see a draft release.
+permissions:
+  contents: write
+
+jobs:
+  loadcheck:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04-arm, platform: linux_arm64, ext: so }
+          - { runner: windows-2025, platform: windows_amd64, ext: dll }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Test the loader
+        run: go test -count=1 ./tools/loadcheck/
+      # The token stays in this step: loadcheck runs code from the module graph.
+      - name: Download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern "*_${{ matrix.platform }}.zip" --pattern checksums.txt
+          cd assets
+          sha256sum --check --ignore-missing checksums.txt
+          unzip -q ./*_${{ matrix.platform }}.zip
+      - name: Load
+        env:
+          TAG: ${{ inputs.tag }}
+        run: go run ./tools/loadcheck -version "${TAG#v}" "assets/cpa-codex-weight-balancer.${{ matrix.ext }}"
+
+  # No darwin/amd64 build is released: Go keeps g in a fixed TLS slot there, so a
+  # Go plugin should crash a Go host, and does under Rosetta. This records what a
+  # native Intel Mac does; its outcome never fails the run.
+  intel-probe:
+    runs-on: macos-15-intel
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build and load
+        env:
+          TAG: ${{ inputs.tag }}
+          CGO_ENABLED: "1"
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+          CGO_CFLAGS: -O2 -g -mmacosx-version-min=12.0
+          CGO_LDFLAGS: -mmacosx-version-min=12.0
+        run: |
+          go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o probe/cpa-codex-weight-balancer.dylib ./plugin
+          go run ./tools/loadcheck -version "${TAG#v}" probe/cpa-codex-weight-balancer.dylib

@@ -5,7 +5,7 @@ GOARCH  ?= $(shell go env GOARCH)
 EXT     := $(if $(filter windows,$(GOOS)),.dll,$(if $(filter darwin,$(GOOS)),.dylib,.so))
 DIST    := dist
 
-.PHONY: all build test vet clean release checksums
+.PHONY: all build test vet clean release checksums dist
 
 all: vet test build
 
@@ -29,6 +29,10 @@ release: build
 
 checksums:
 	@cd $(DIST) && sha256sum *.zip > checksums.txt && cat checksums.txt
+
+# Release zips for every supported platform; needs Docker and a Mac, see scripts/dist.sh.
+dist: vet test
+	scripts/dist.sh
 
 clean:
 	rm -rf $(DIST) build
