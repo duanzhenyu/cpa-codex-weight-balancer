@@ -37,8 +37,8 @@ waste less. The rate is a good urgency signal; it is not a zero-evaporation proo
 
 ## What the two Codex windows can and cannot do
 
-Codex reports each rate-limit window as a bare `used_percent` plus
-`limit_window_seconds` and a reset time. There is **no plan capacity anywhere in the payload**, so a weekly
+Codex reports each rate-limit window as a bare `used_percent` plus `limit_window_seconds`
+and a reset time. There is **no plan capacity anywhere in the payload**, so a weekly
 percentage and a 5-hour percentage are different units and cannot be combined.
 
 Therefore:
@@ -112,10 +112,11 @@ chance to compete for one.
 
 ## Banked reset credits
 
-Codex grants accounts reset credits: each one, redeemed, restores both the weekly and the
-five-hour window, and each expires about 30 days after it was granted. A credit is a whole
-window of quota with a deadline of its own, so with `reset_credits: true` it is priced
-exactly like one and added to the weekly rate:
+Codex grants accounts reset credits, each expiring 30 days after it was granted. Each is
+titled "Full reset (Weekly + 5 hr)", so redeeming one should restore both windows — no
+credit has been redeemed here to confirm that. A credit is a whole window of quota with a
+deadline of its own, so with `reset_credits: true` it is priced exactly like one and added
+to the weekly rate:
 
 ```
 rate = weekly_remaining / max(time_to_reset, t_floor) ^ alpha
@@ -187,6 +188,11 @@ no tokens, no credential JSON and no file names.
 
 The `weight` on each row is the plugin's own target, not necessarily what is on disk:
 during warmup it reads 0 while the credential keeps whatever weight it already had.
+
+A failed probe freezes a row's state and weight and sets its `error`; `stale` turns true
+once the frozen weight is older than `freshness`. A credential never priced yet therefore
+reads `pending` at 0 both while warming up and while every probe fails — `error` is what
+tells them apart.
 
 `weights_pending` counts the weights the plugin wants to move; `weights_written` counts
 the saves that actually reached the host. The plugin does not claim to know whether the
@@ -302,7 +308,8 @@ detected but every nudge is being rejected".
   credential triggers no probe of its own; the ticker still probes it every cycle. On
   top of that, a timer rechecks the exclusion 30 seconds after the recorded reset and
   lifts it if the probe agrees; one that still reads spent is retried a minute later,
-  since whether Codex has actually reset at the instant it reported is not verified. A 429 the probe does not confirm — budget left — changes nothing, and routing
+  since whether Codex has actually reset at the instant it reported is not verified.
+  A 429 the probe does not confirm — budget left — changes nothing, and routing
   to that account is left to the host, which derives its own recovery time from
   `Retry-After` or blind exponential backoff capped at 30 minutes, never from the
   `Reset-After-Seconds` sitting in that same response. A recheck whose probe fails is
@@ -314,9 +321,10 @@ detected but every nudge is being rejected".
   `context_length_exceeded`, `previous_response_not_found` and the like, following the
   host's own `IsRequestFault`. An image-generation tool call, which the host reports as
   two served records of one attempt, counts once — unless another request's record on the
-  same credential lands between the two, which dilutes the rate rather than inflating it. Each scheduled cycle folds its
-  tally, stamped with the cycle's time, into a sliding window (`error_window`: default 12h,
-  or `interval` if that is longer; never shorter than `interval`) and sets the rate to
+  same credential lands between the two, which dilutes the rate rather than inflating it.
+  Each scheduled cycle folds its tally, stamped with the cycle's time, into a sliding
+  window (`error_window`: default 12h, or `interval` if that is longer; never shorter
+  than `interval`) and sets the rate to
   `failures / max(requests, 10)` summed over the window. A tally drops out at the first
   scheduled cycle a full window after it was folded. `POST /refresh` and the cycle a reload
   starts with price with the rate as it stands; only the ticker folds. The weekly score is
@@ -335,12 +343,12 @@ detected but every nudge is being rejected".
   actually produces has not been observed live.
 - **`reset_credits` has an endgame.** At `alpha = 1` one credit alone prices at 2.3× a
   fresh week three days before expiry, 7× a day before, 168× an hour before, and 672× at
-  the default `t_floor`. In that last day the account's bucket moves often, and every move wipes the
-  host's routing accumulator fleet-wide; the account may also spend its five-hour window
-  and be excluded, sticky sessions with it. The weekly window has the same shape near
-  its reset — this adds one such endgame per credit. A redeemed credit lingers in the
-  price for up to one cycle. What `applicable_available_count` in `/wham/usage` means is
-  unknown, so it is not used.
+  the default `t_floor`. In that last day the account's bucket moves often, and every
+  move wipes the host's routing accumulator fleet-wide; the account may also spend its
+  five-hour window and be excluded, sticky sessions with it. The weekly window has the
+  same shape near its reset — this adds one such endgame per credit. A redeemed credit
+  lingers in the price for up to one cycle. What `applicable_available_count` in
+  `/wham/usage` means is unknown, so it is not used.
 
 ## Requirements
 
