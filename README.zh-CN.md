@@ -163,7 +163,7 @@ POST /v0/management/cpa-codex-weight-balancer/refresh
   | `darwin/arm64` | macOS ≥ 12（CPA 自身需要 15） | `tools/loadcheck` | CPA 8.0.27 |
 
   glibc 2.17 是 CPA 自己的 Linux 构建所针对的基线；要在运行 CPA 的容器里测，而不是在 Docker 宿主机上。`tools/loadcheck` 按宿主的方式加载动态库、注册它、跑一轮 dry-run（期间回调宿主的调用落在 Go 里并在那里增长栈），再关闭它——覆盖跨 ABI 的往返，不含宿主的其余部分。
-- **没有 `darwin/amd64`。** Go 在那里把当前 goroutine 放在固定的 TLS 槽位（`0x30(GS)`），所以 Go 插件与 Go 宿主会互相覆盖。Rosetta 下的 CPA 8.0.27 在第一次增长栈的插件调用时崩溃，本插件和商店里的其他插件都一样；原生 Intel Mac 未测试。Go 在 Darwin 和 Windows 上根本不支持把 `c-shared` Go 库加载进 Go 程序（golang/go#29061、#49457），所以对这些平台，上表就是全部的承诺。
+- **没有 `darwin/amd64`。** Go 在那里把当前 goroutine 放在固定的 TLS 槽位（`0x30(GS)`），所以 Go 插件与 Go 宿主会互相覆盖。Rosetta 下的 CPA 8.0.27 在第一次增长栈的插件调用时崩溃，本插件和商店里的其他插件都一样；`tools/loadcheck` 在原生 Intel Mac 上同样崩溃。Go 在 Darwin 和 Windows 上根本不支持把 `c-shared` Go 库加载进 Go 程序（golang/go#29061、#49457），所以对这些平台，上表就是全部的承诺。
 
 ## 安装
 

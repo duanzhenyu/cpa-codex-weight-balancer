@@ -53,8 +53,9 @@ jobs:
         run: go run ./tools/loadcheck -version "${TAG#v}" "assets/cpa-codex-weight-balancer.${{ matrix.ext }}"
 
   # No darwin/amd64 build is released: Go keeps g in a fixed TLS slot there, so a
-  # Go plugin should crash a Go host, and does under Rosetta. This records what a
-  # native Intel Mac does; its outcome never fails the run.
+  # Go plugin should crash a Go host, and does under Rosetta and on this runner
+  # (v0.7.1). This records what a native Intel Mac does; its outcome never fails
+  # the run.
   intel-probe:
     runs-on: macos-15-intel
     continue-on-error: true

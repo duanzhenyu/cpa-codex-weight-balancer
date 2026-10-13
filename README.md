@@ -375,9 +375,10 @@ detected but every nudge is being rejected".
 - **No `darwin/amd64`.** Go keeps the current goroutine in a fixed TLS slot there
   (`0x30(GS)`), so a Go plugin and a Go host overwrite each other's. CPA 8.0.27 under
   Rosetta crashes on the first plugin call that grows a stack, with this plugin and with
-  others from the store; a native Intel Mac is untested. Go does not support loading a
-  `c-shared` Go library into a Go program on Darwin or Windows at all (golang/go#29061,
-  #49457), so for those platforms the table is the whole claim.
+  others from the store, and `tools/loadcheck` crashes the same way on a native Intel Mac.
+  Go does not support loading a `c-shared` Go library into a Go program on Darwin or
+  Windows at all (golang/go#29061, #49457), so for those platforms the table is the
+  whole claim.
 
 ## Install
 
