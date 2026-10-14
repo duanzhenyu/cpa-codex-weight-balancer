@@ -171,7 +171,7 @@ POST /v0/management/cpa-codex-weight-balancer/refresh
 
 从插件商店：管理中心 → 插件 → 安装 `cpa-codex-weight-balancer`。
 
-手动：从 [Releases](https://github.com/duanzhenyu/cpa-codex-weight-balancer/releases) 下载你所在平台的 zip 与 `checksums.txt`，运行 `sha256sum --ignore-missing -c checksums.txt`，然后把动态库（`.so`、`.dll` 或 `.dylib`）解压到你的 `plugins.dir`，可选放在 `<goos>/<goarch>/` 子目录下。插件 ID 是文件名去掉扩展名和可选的 `-v<version>` 后缀，所以 `cpa-codex-weight-balancer.so` 和 `cpa-codex-weight-balancer-v0.7.1.so` 都可以——其他名字都会改掉插件名。
+手动：从 [Releases](https://github.com/duanzhenyu/cpa-codex-weight-balancer/releases) 下载你所在平台的 zip 与 `checksums.txt`，运行 `sha256sum --ignore-missing -c checksums.txt`，然后把动态库（`.so`、`.dll` 或 `.dylib`）解压到你的 `plugins.dir`，可选放在 `<goos>/<goarch>/` 子目录下。插件 ID 是文件名去掉扩展名和可选的 `-v<version>` 后缀，所以 `cpa-codex-weight-balancer.so` 和 `cpa-codex-weight-balancer-v0.7.2.so` 都可以——其他名字都会改掉插件名。
 
 在 Docker 下，把 `plugins.dir` 放在挂载卷上：默认的 `"plugins"` 相对于容器的工作目录，容器重建后就没了。覆盖同一路径上已加载的动态库需要重启。
 
