@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -79,7 +80,48 @@ func (f fakeRefresh) call(method string, request []byte) ([]byte, error) {
 	return []byte(f.raw), nil
 }
 
-func (fakeRefresh) shutdown() {}
+func (fakeRefresh) shutdown() error { return nil }
+
+// fakePlugin registers, refreshes and reports err from its shutdown.
+type fakePlugin struct {
+	shutdowns *int
+	err       error
+}
+
+func (f fakePlugin) call(method string, request []byte) ([]byte, error) {
+	if method == pluginabi.MethodPluginRegister {
+		return []byte(goodRegistration), nil
+	}
+	return fakeRefresh{`{"ok":true,"result":{"StatusCode":200}}`, true}.call(method, request)
+}
+
+func (f fakePlugin) shutdown() error {
+	*f.shutdowns++
+	return f.err
+}
+
+func TestCheckReloadsAndFailsOnShutdown(t *testing.T) {
+	cases := map[string]struct {
+		err                      error
+		wantLoads, wantShutdowns int
+	}{
+		"clean":    {nil, 2, 2},
+		"unmapped": {errors.New("unmapped"), 1, 1},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var loads, shutdowns int
+			err := check(func() (library, error) {
+				loads++
+				return fakePlugin{&shutdowns, tc.err}, nil
+			}, "0.7.1")
+			if err != tc.err || loads != tc.wantLoads || shutdowns != tc.wantShutdowns {
+				t.Fatalf("check() = %v after %d loads and %d shutdowns, want %v after %d and %d",
+					err, loads, shutdowns, tc.err, tc.wantLoads, tc.wantShutdowns)
+			}
+		})
+	}
+}
 
 func TestRefreshRequiresAHostCallback(t *testing.T) {
 	// A callback before the probe must not count for it.

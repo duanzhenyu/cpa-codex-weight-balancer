@@ -3,6 +3,7 @@
 package main
 
 /*
+#cgo linux CFLAGS: -D_GNU_SOURCE
 #cgo linux LDFLAGS: -ldl
 #include <dlfcn.h>
 #include <stdint.h>
@@ -63,10 +64,16 @@ static void plugin_free(cliproxy_plugin_free_fn fn, void* ptr, size_t len) {
 static void plugin_shutdown(cliproxy_plugin_shutdown_fn fn) {
 	fn();
 }
+
+static int mapped(void* p) {
+	Dl_info info;
+	return dladdr(p, &info) != 0;
+}
 */
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -135,8 +142,14 @@ func (l *unixLibrary) call(method string, request []byte) ([]byte, error) {
 }
 
 // shutdown also unloads, as the host does when a plugin is disabled: a library
-// that crashes on dlclose crashes the host with it.
-func (l *unixLibrary) shutdown() {
+// that crashes on dlclose crashes the host with it. Its Go runtime cannot stop,
+// so the image must stay mapped; on darwin an unmapped one leaves the runtime's
+// threads spinning and can hang the host's exit.
+func (l *unixLibrary) shutdown() error {
 	C.plugin_shutdown(l.api.shutdown)
 	C.dlclose(l.handle)
+	if C.mapped(unsafe.Pointer(l.api.call)) == 0 {
+		return errors.New("dlclose unmapped the library under its running Go runtime")
+	}
+	return nil
 }

@@ -52,6 +52,22 @@ static void free_host_buffer(void* ptr, size_t len) {
 		stored_host->free_buffer(ptr, len);
 	}
 }
+
+#ifdef __APPLE__
+#include <dlfcn.h>
+
+// The Go runtime cannot be unloaded. On Linux Go's linker marks the library
+// NODELETE; on Darwin nothing does, and unmapping the image on the host's
+// dlclose leaves the runtime's threads spinning and can hang the host's exit.
+static void pin_image(void) {
+	Dl_info info;
+	if (dladdr((void*)pin_image, &info) && info.dli_fname != NULL) {
+		dlopen(info.dli_fname, RTLD_LAZY | RTLD_LOCAL | RTLD_NOLOAD | RTLD_NODELETE);
+	}
+}
+#else
+static void pin_image(void) {}
+#endif
 */
 import "C"
 
@@ -85,6 +101,7 @@ const maxPayload = math.MaxInt32
 //export cliproxy_plugin_init
 func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) (code C.int) {
 	defer catch(&code)
+	C.pin_image()
 	if plugin == nil {
 		return 1
 	}

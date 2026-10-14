@@ -99,6 +99,7 @@ func (windowsLibrary) call(method string, request []byte) ([]byte, error) {
 }
 
 // The host never unloads a Go DLL on Windows, so neither does this.
-func (windowsLibrary) shutdown() {
+func (windowsLibrary) shutdown() error {
 	syscall.SyscallN(pluginAPI.shutdown)
+	return nil
 }

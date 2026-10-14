@@ -21,7 +21,7 @@ import (
 // callback goes through onHostCall and fails.
 type library interface {
 	call(method string, request []byte) ([]byte, error)
-	shutdown()
+	shutdown() error
 }
 
 func main() {
@@ -31,19 +31,35 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: loadcheck -version <x.y.z> <library>")
 		os.Exit(2)
 	}
-	if err := check(flag.Arg(0), *version); err != nil {
+	if err := check(func() (library, error) { return open(flag.Arg(0)) }, *version); err != nil {
 		fmt.Fprintln(os.Stderr, "loadcheck:", err)
 		os.Exit(1)
 	}
 	fmt.Println("loadcheck: ok", flag.Arg(0))
 }
 
-func check(path, version string) error {
-	lib, err := open(path)
+// check goes through the plugin's life twice, as the host does when a plugin
+// is disabled and enabled again: the second load initialises the image the
+// first one left behind.
+func check(load func() (library, error), version string) error {
+	for range 2 {
+		if err := cycle(load, version); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cycle(load func() (library, error), version string) (err error) {
+	lib, err := load()
 	if err != nil {
 		return err
 	}
-	defer lib.shutdown()
+	defer func() {
+		if serr := lib.shutdown(); err == nil {
+			err = serr
+		}
+	}()
 	request, err := json.Marshal(map[string]any{
 		"config_yaml":    []byte("enabled: true\npriority: 0\ndry_run: true\n"),
 		"schema_version": pluginabi.SchemaVersion,
