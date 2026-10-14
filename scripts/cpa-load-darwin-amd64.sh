@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Loads a darwin/amd64 library into the official CPA darwin/amd64 release and
 # fails unless CPA registers it, stays up through a soak of status and
-# refresh calls with GOGC=10, and then stops cleanly, unloading the plugin.
-# Two runtimes sharing a g slot corrupt the heap within seconds; refresh calls
-# back into the host, so both directions of the crossing run. On an Apple
-# Silicon Mac CPA runs under Rosetta.
+# refresh calls with GOGC=10, idles without burning CPU once the plugin is
+# disabled, serves it again once re-enabled, and then stops cleanly. Two
+# runtimes sharing a g slot corrupt the heap within seconds; refresh calls
+# back into the host, so both directions of the crossing run. Disabling
+# dlcloses the library, and an image dyld unmaps under the plugin's running Go
+# runtime leaves its threads spinning. On an Apple Silicon Mac CPA runs under
+# Rosetta.
 #
 # CPA gets an empty auth-dir and the plugin dry_run, and the proxy points at a
 # closed loopback port: nothing leaves the machine but the CPA download, which
@@ -91,7 +94,8 @@ dead=http://127.0.0.1:9
 	${launch[@]+"${launch[@]}"} "$work/cpa/cli-proxy-api" -config "$work/config.yaml") >"$log" 2>&1 &
 pid=$!
 
-api=http://127.0.0.1:$port/v0/management/$plugin
+mgmt=http://127.0.0.1:$port/v0/management
+api=$mgmt/$plugin
 # Prints the HTTP status, and fails when the exchange does, even after a 200.
 code() {
 	curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 10 -H "Authorization: Bearer $key" "$@"
@@ -105,32 +109,69 @@ check_log() {
 	*) fail "could not read the CPA log" ;;
 	esac
 }
+# CPU seconds CPA has used, from ps's colon-separated time; CPA runs here for
+# minutes, not days.
+cpu_seconds() {
+	ps -o time= -p "$pid" | awk -F: '{ s = 0; for (i = 1; i <= NF; i++) s = s * 60 + $i; printf "%d\n", s } END { if (!NR) exit 1 }'
+}
+await_status() {
+	for _ in $(seq 60); do
+		kill -0 "$pid" 2>/dev/null || fail "CPA exited before the status route answered"
+		if got=$(code "$api/status") && [ "$got" = 200 ]; then
+			return
+		fi
+		sleep 1
+	done
+	fail "status route never answered 200"
+}
+# soak_for SECONDS
+soak_for() {
+	local start=$calls end=$((SECONDS + $1))
+	while [ "$SECONDS" -lt "$end" ]; do
+		kill -0 "$pid" 2>/dev/null || fail "CPA exited after $calls rounds"
+		got=$(code "$api/status") || fail "status request failed after $calls rounds"
+		[ "$got" = 200 ] || fail "status answered $got after $calls rounds"
+		got=$(code -X POST "$api/refresh") || fail "refresh request failed after $calls rounds"
+		[ "$got" = 200 ] || fail "refresh answered $got after $calls rounds"
+		calls=$((calls + 1))
+	done
+	kill -0 "$pid" 2>/dev/null || fail "CPA exited at the end of a soak"
+	[ "$calls" -gt "$start" ] || fail "no status+refresh round completed"
+	check_log
+}
+# set_enabled true|false
+set_enabled() {
+	got=$(code -X PATCH -H 'Content-Type: application/json' -d "{\"enabled\":$1}" "$mgmt/plugins/$plugin/enabled") ||
+		fail "setting enabled to $1 failed"
+	[ "$got" = 200 ] || fail "setting enabled to $1 answered $got"
+}
 
-up=""
-for _ in $(seq 60); do
-	kill -0 "$pid" 2>/dev/null || fail "CPA exited during startup"
-	if got=$(code "$api/status") && [ "$got" = 200 ]; then
-		up=1
+await_status
+check_log
+calls=0
+soak_for "$soak"
+
+set_enabled false
+unloaded=""
+for _ in $(seq 30); do
+	if grep -q 'pluginhost: plugin unloaded' "$log"; then
+		unloaded=1
 		break
 	fi
 	sleep 1
 done
-[ -n "$up" ] || fail "status route never answered 200"
+[ -n "$unloaded" ] || fail "CPA did not unload the plugin within 30s of disabling it"
+idle=60
+before=$(cpu_seconds) || fail "could not read CPA's CPU time"
+sleep "$idle"
+after=$(cpu_seconds) || fail "CPA exited after unloading the plugin"
+used=$((after - before))
+[ "$used" -ge 0 ] && [ "$used" -lt $((idle / 2)) ] || fail "CPA used ${used}s of CPU in the ${idle}s after unloading the plugin"
 check_log
 
-calls=0
-end=$((SECONDS + soak))
-while [ "$SECONDS" -lt "$end" ]; do
-	kill -0 "$pid" 2>/dev/null || fail "CPA exited after $calls rounds"
-	got=$(code "$api/status") || fail "status request failed after $calls rounds"
-	[ "$got" = 200 ] || fail "status answered $got after $calls rounds"
-	got=$(code -X POST "$api/refresh") || fail "refresh request failed after $calls rounds"
-	[ "$got" = 200 ] || fail "refresh answered $got after $calls rounds"
-	calls=$((calls + 1))
-done
-kill -0 "$pid" 2>/dev/null || fail "CPA exited at the end of the soak"
-[ "$calls" -gt 0 ] || fail "no status+refresh round completed"
-check_log
+set_enabled true
+await_status
+soak_for 30
 
 kill "$pid" || true
 for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
@@ -140,4 +181,4 @@ wait "$pid" || status=$?
 pid=""
 [ "$status" -eq 0 ] || fail "CPA exited with status $status on SIGTERM"
 check_log
-echo "cpa-load: ok, CPA $cpa_version alive after $calls status+refresh rounds over ${soak}s with GOGC=10, then stopped cleanly"
+echo "cpa-load: ok, CPA $cpa_version alive after $calls status+refresh rounds with GOGC=10, idle at ${used}s of CPU over ${idle}s with the plugin unloaded, then stopped cleanly"

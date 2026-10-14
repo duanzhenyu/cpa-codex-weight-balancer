@@ -57,6 +57,8 @@ jobs:
   # a stock build shares the host's slot and crashes CPA.
   darwin-amd64:
     runs-on: macos-15-intel
+    # A library dyld unmaps under its runtime can hang the host's exit.
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash

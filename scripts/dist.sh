@@ -106,6 +106,21 @@ cross() {
 	go run ./tools/loadcheck -version "$version" "out/linux_amd64/$plugin.so"
 }
 
+# A library that hangs its host's exit would hang the release with it. macOS
+# has no timeout(1), and Go ignores SIGALRM.
+bounded_loadcheck() {
+	local pid n=0 status=0
+	"$@" &
+	pid=$!
+	while kill -0 "$pid" 2>/dev/null; do
+		[ "$n" -lt 120 ] || { kill -9 "$pid" 2>/dev/null || true; break; }
+		sleep 1
+		n=$((n + 1))
+	done
+	wait "$pid" || status=$?
+	[ "$status" -eq 0 ] || die "loadcheck exited with status $status: $*"
+}
+
 # On an Apple Silicon Mac, which can load what it builds, amd64 under Rosetta.
 darwin() {
 	[ "$(uname -m)" = arm64 ] || die "darwin is built and loaded on an Apple Silicon Mac"
@@ -117,7 +132,7 @@ darwin() {
 	build darwin arm64 clang dylib
 	check_darwin "out/darwin_arm64/$plugin.dylib" logs/darwin_arm64.log
 	go build -o logs/loadcheck ./tools/loadcheck
-	logs/loadcheck -version "$version" "out/darwin_arm64/$plugin.dylib"
+	bounded_loadcheck logs/loadcheck -version "$version" "out/darwin_arm64/$plugin.dylib"
 
 	tls_toolchain
 	# A cache of its own: a release toolchain's tool IDs are its version string,
@@ -132,7 +147,7 @@ darwin() {
 	check_slot "out/darwin_amd64/$plugin.dylib"
 	# The host side stays stock, as in CPA.
 	GOARCH=amd64 CC="clang -arch x86_64" go build -o logs/loadcheck_amd64 ./tools/loadcheck
-	arch -x86_64 logs/loadcheck_amd64 -version "$version" "out/darwin_amd64/$plugin.dylib"
+	bounded_loadcheck arch -x86_64 logs/loadcheck_amd64 -version "$version" "out/darwin_amd64/$plugin.dylib"
 }
 
 # Globals, so the EXIT trap still sees them after release returns.

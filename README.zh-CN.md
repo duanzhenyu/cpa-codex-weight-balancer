@@ -163,8 +163,9 @@ POST /v0/management/cpa-codex-weight-balancer/refresh
   | `darwin/arm64` | macOS ≥ 12（CPA 自身需要 15） | `tools/loadcheck` | CPA 8.0.27 |
   | `darwin/amd64` | macOS ≥ 12（CPA 自身需要 15） | Rosetta 下与 Intel runner 上的 `tools/loadcheck`，以及 runner 上的 CPA 8.0.27 | Rosetta 下的 CPA 8.0.27 |
 
-  glibc 2.17 是 CPA 自己的 Linux 构建所针对的基线；要在运行 CPA 的容器里测，而不是在 Docker 宿主机上。`tools/loadcheck` 按宿主的方式加载动态库、注册它、跑一轮 dry-run（期间回调宿主的调用落在 Go 里并在那里增长栈），再关闭它——覆盖跨 ABI 的往返，不含宿主的其余部分。
+  glibc 2.17 是 CPA 自己的 Linux 构建所针对的基线；要在运行 CPA 的容器里测，而不是在 Docker 宿主机上。`tools/loadcheck` 按宿主的方式加载动态库、注册它、跑一轮 dry-run（期间回调宿主的调用落在 Go 里并在那里增长栈），再关闭它；在 Linux 和 macOS 上随后调用 `dlclose`，并检查镜像仍在映射中。这一切做两遍，第二遍在第一遍留下的镜像上，就像重新启用插件时那样——覆盖跨 ABI 的往返，不含宿主的其余部分。
 - **`darwin/amd64` 用打过补丁的 Go 工具链构建。** 原版 Go 在那里让每个运行时都把当前 goroutine 放在 TLS 槽位 6（`0x30(GS)`），所以原版构建的 Go 插件与 Go 宿主会互相覆盖：Rosetta 下的 CPA 8.0.27 在第一次增长栈的插件调用时崩溃，本插件和商店里的其他插件都一样；`tools/loadcheck` 在原生 Intel Mac 上同样崩溃。本插件的这个库用 [`scripts/go-tls-slot.patch`](scripts/go-tls-slot.patch) 构建，它把插件的运行时挪到苹果保留的另一个槽位 11（`0x58(GS)`），只要反汇编里还有对槽位 6 的访问，构建就失败。所有这样构建的库共用槽位 11，所以一个 Intel 上的 CPA 只能加载其中一个；商店里的 quota-reset-router、claude-seat-pacer 和 kpatdev-quota-router 也用它。这一点是按机制推出来的，没有实际试过。
+- **macOS 上库一直留在内存里，直到 CPA 退出。** CPA 停用插件时会调用 `dlclose`，但 Go 运行时无法卸载。Linux 上 Go 链接器给库打了标记，`dlclose` 不会卸掉它；macOS 上没有任何东西这样做，dyld 会在运行时线程还在跑的时候把镜像卸掉。用 0.7.1 的插件代码时，插件停用后的那一分钟里，CPA 8.0.27 在 Apple Silicon 上一直占满一个核，Rosetta 下更多；以 `tools/loadcheck` 为宿主、在 `dlclose` 后驻留 150 秒时，Rosetta 下三次里有两次退出卡死。0.7.2 起插件在初始化时钉住自己的镜像，停用只让它停止工作，与 Linux、Windows 一致。`tools/loadcheck` 会拒绝 `dlclose` 后被卸掉的库；插件停用后一分钟内 CPA 用掉半个核或更多时，`verify-release` 的 Intel job 会失败。
 - Go 在 Darwin 和 Windows 上根本不支持把 `c-shared` Go 库加载进 Go 程序（golang/go#29061、#49457），所以对这些平台，上表就是全部的承诺。
 
 ## 安装
@@ -173,7 +174,7 @@ POST /v0/management/cpa-codex-weight-balancer/refresh
 
 手动：从 [Releases](https://github.com/duanzhenyu/cpa-codex-weight-balancer/releases) 下载你所在平台的 zip 与 `checksums.txt`，运行 `sha256sum --ignore-missing -c checksums.txt`，然后把动态库（`.so`、`.dll` 或 `.dylib`）解压到你的 `plugins.dir`，可选放在 `<goos>/<goarch>/` 子目录下。插件 ID 是文件名去掉扩展名和可选的 `-v<version>` 后缀，所以 `cpa-codex-weight-balancer.so` 和 `cpa-codex-weight-balancer-v0.7.2.so` 都可以——其他名字都会改掉插件名。
 
-在 Docker 下，把 `plugins.dir` 放在挂载卷上：默认的 `"plugins"` 相对于容器的工作目录，容器重建后就没了。覆盖同一路径上已加载的动态库需要重启。
+在 Docker 下，把 `plugins.dir` 放在挂载卷上：默认的 `"plugins"` 相对于容器的工作目录，容器重建后就没了。替换 CPA 已加载过的动态库需要重启，停用插件之后也一样：库要到 CPA 退出才释放。
 
 然后启用它，并用 `dry_run: true` 先跑一次不写入的。
 

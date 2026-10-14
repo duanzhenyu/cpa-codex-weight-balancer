@@ -371,8 +371,10 @@ detected but every nudge is being rejected".
   glibc 2.17 is the baseline CPA's own Linux build targets; measure it inside the
   container that runs CPA, not on the Docker host. `tools/loadcheck` loads the library
   the way the host does, registers it, runs one dry-run cycle whose calls back into the
-  host land in Go and grow the stack there, and shuts it down — the ABI crossings,
-  without the rest of the host.
+  host land in Go and grow the stack there, and shuts it down; on Linux and macOS it
+  then calls `dlclose` and checks that the image is still mapped. It does all of that
+  twice, the second time on the image the first left behind, as re-enabling a plugin
+  does — the ABI crossings, without the rest of the host.
 - **`darwin/amd64` is built with a patched Go toolchain.** Stock Go keeps the current
   goroutine in TLS slot 6 (`0x30(GS)`) in every runtime there, so a stock-built Go plugin
   and the Go host overwrite each other's: CPA 8.0.27 under Rosetta crashes on the first
@@ -384,6 +386,17 @@ detected but every nudge is being rejected".
   CPA can load only one of them; quota-reset-router, claude-seat-pacer and
   kpatdev-quota-router in the store use it too. That follows from the mechanism and has
   not been tried.
+- **On macOS the library stays loaded until CPA exits.** CPA calls `dlclose` on a
+  disabled plugin, but a Go runtime cannot be unloaded. On Linux Go's linker marks the
+  library so that `dlclose` leaves it mapped; on macOS nothing does, and dyld unmaps it
+  under the runtime's running threads. With 0.7.1's plugin code, CPA 8.0.27 then used a
+  whole core on Apple Silicon, and more under Rosetta, for the minute measured after the
+  plugin was disabled; with `tools/loadcheck` as the host lingering 150 seconds after
+  `dlclose`, it hung on exit in two of three Rosetta runs. From 0.7.2 the plugin pins its
+  own image when initialised, so disabling it only stops it, as on Linux and Windows.
+  `tools/loadcheck` fails a library that `dlclose` unmaps, and the Intel job in
+  `verify-release` fails if CPA uses half a core or more in the minute after the plugin
+  is disabled.
 - Go does not support loading a `c-shared` Go library into a Go program on Darwin or
   Windows at all (golang/go#29061, #49457), so for those platforms the table is the
   whole claim.
@@ -401,7 +414,8 @@ the filename minus the extension and an optional `-v<version>` suffix, so
 anything else renames the plugin.
 Under Docker, put `plugins.dir` on a mounted volume: the default `"plugins"` is
 relative to the container's working directory, which does not survive a rebuild.
-Overwriting a library already loaded at the same path needs a restart.
+Replacing a library CPA has loaded needs a restart, even after disabling the plugin: the
+library stays loaded until CPA exits.
 
 Then enable it and give it a first, write-free run with `dry_run: true`.
 
