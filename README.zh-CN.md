@@ -161,9 +161,11 @@ POST /v0/management/cpa-codex-weight-balancer/refresh
   | `linux/arm64` | glibc ≥ 2.17 | arm64 runner 上的 `tools/loadcheck` | — |
   | `windows/amd64` | — | Windows runner 上的 `tools/loadcheck` | — |
   | `darwin/arm64` | macOS ≥ 12（CPA 自身需要 15） | `tools/loadcheck` | CPA 8.0.27 |
+  | `darwin/amd64` | macOS ≥ 12（CPA 自身需要 15） | Rosetta 下与 Intel runner 上的 `tools/loadcheck`，以及 runner 上的 CPA 8.0.27 | Rosetta 下的 CPA 8.0.27 |
 
   glibc 2.17 是 CPA 自己的 Linux 构建所针对的基线；要在运行 CPA 的容器里测，而不是在 Docker 宿主机上。`tools/loadcheck` 按宿主的方式加载动态库、注册它、跑一轮 dry-run（期间回调宿主的调用落在 Go 里并在那里增长栈），再关闭它——覆盖跨 ABI 的往返，不含宿主的其余部分。
-- **没有 `darwin/amd64`。** Go 在那里把当前 goroutine 放在固定的 TLS 槽位（`0x30(GS)`），所以 Go 插件与 Go 宿主会互相覆盖。Rosetta 下的 CPA 8.0.27 在第一次增长栈的插件调用时崩溃，本插件和商店里的其他插件都一样；`tools/loadcheck` 在原生 Intel Mac 上同样崩溃。Go 在 Darwin 和 Windows 上根本不支持把 `c-shared` Go 库加载进 Go 程序（golang/go#29061、#49457），所以对这些平台，上表就是全部的承诺。
+- **`darwin/amd64` 用打过补丁的 Go 工具链构建。** 原版 Go 在那里让每个运行时都把当前 goroutine 放在 TLS 槽位 6（`0x30(GS)`），所以原版构建的 Go 插件与 Go 宿主会互相覆盖：Rosetta 下的 CPA 8.0.27 在第一次增长栈的插件调用时崩溃，本插件和商店里的其他插件都一样；`tools/loadcheck` 在原生 Intel Mac 上同样崩溃。本插件的这个库用 [`scripts/go-tls-slot.patch`](scripts/go-tls-slot.patch) 构建，它把插件的运行时挪到苹果保留的另一个槽位 11（`0x58(GS)`），只要反汇编里还有对槽位 6 的访问，构建就失败。所有这样构建的库共用槽位 11，所以一个 Intel 上的 CPA 只能加载其中一个；商店里的 quota-reset-router、claude-seat-pacer 和 kpatdev-quota-router 也用它。这一点是按机制推出来的，没有实际试过。
+- Go 在 Darwin 和 Windows 上根本不支持把 `c-shared` Go 库加载进 Go 程序（golang/go#29061、#49457），所以对这些平台，上表就是全部的承诺。
 
 ## 安装
 
@@ -183,7 +185,7 @@ make release    # 生成 <id>_<version>_<goos>_<goarch>.zip，动态库在 zip �
 make dist       # 为上面每个平台生成 release zip，外加 checksums.txt
 ```
 
-需要 CGO。`make dist` 还需要 GNU userland，以及能运行 `linux/amd64` 镜像的 Docker。它在 Docker 里构建 Linux 和 Windows（`scripts/Dockerfile`；由 zig 钉住 glibc 基线），通过 SSH 在 Apple Silicon Mac 上构建 `darwin/arm64`（`MAC_HOST`，默认 `macbook`；那边下载需要代理时设 `MAC_PROXY`），并加载每个它能运行的库。把它们上传到草稿 release，再对它运行 `.github/workflows/verify-release.yml` 来加载另外两个。
+需要 CGO。`make dist` 还需要 GNU userland，以及能运行 `linux/amd64` 镜像的 Docker。它在 Docker 里构建 Linux 和 Windows（`scripts/Dockerfile`；由 zig 钉住 glibc 基线），通过 SSH 在 Apple Silicon Mac 上构建两个 Darwin 库（`MAC_HOST`，默认 `macbook`；那边下载需要代理时设 `MAC_PROXY`），并加载每个它能运行的库，`darwin/amd64` 在 Rosetta 下加载。后者需要用 `scripts/go-tls-slot.patch` 从源码编出的 Go，Mac 上编一次后保留在 `~/Library/Caches/cpa-wb-go-tls`；`make build` 拒绝构建它。把它们上传到草稿 release，再对它运行 `.github/workflows/verify-release.yml`，加载 `linux/arm64` 和 `windows/amd64`，并在原生 Intel Mac 上加载 `darwin/amd64`，在那里同时跑一遍 CPA（`scripts/cpa-load-darwin-amd64.sh`）。
 
 ## 许可证
 

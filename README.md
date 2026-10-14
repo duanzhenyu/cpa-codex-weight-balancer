@@ -366,17 +366,25 @@ detected but every nudge is being rejected".
   | `linux/arm64` | glibc ≥ 2.17 | `tools/loadcheck` on an arm64 runner | — |
   | `windows/amd64` | — | `tools/loadcheck` on a Windows runner | — |
   | `darwin/arm64` | macOS ≥ 12 (CPA itself needs 15) | `tools/loadcheck` | CPA 8.0.27 |
+  | `darwin/amd64` | macOS ≥ 12 (CPA itself needs 15) | `tools/loadcheck` under Rosetta and on an Intel runner, CPA 8.0.27 on the runner | CPA 8.0.27 under Rosetta |
 
   glibc 2.17 is the baseline CPA's own Linux build targets; measure it inside the
   container that runs CPA, not on the Docker host. `tools/loadcheck` loads the library
   the way the host does, registers it, runs one dry-run cycle whose calls back into the
   host land in Go and grow the stack there, and shuts it down — the ABI crossings,
   without the rest of the host.
-- **No `darwin/amd64`.** Go keeps the current goroutine in a fixed TLS slot there
-  (`0x30(GS)`), so a Go plugin and a Go host overwrite each other's. CPA 8.0.27 under
-  Rosetta crashes on the first plugin call that grows a stack, with this plugin and with
-  others from the store, and `tools/loadcheck` crashes the same way on a native Intel Mac.
-  Go does not support loading a `c-shared` Go library into a Go program on Darwin or
+- **`darwin/amd64` is built with a patched Go toolchain.** Stock Go keeps the current
+  goroutine in TLS slot 6 (`0x30(GS)`) in every runtime there, so a stock-built Go plugin
+  and the Go host overwrite each other's: CPA 8.0.27 under Rosetta crashes on the first
+  plugin call that grows a stack, with this plugin and with others from the store, and
+  `tools/loadcheck` crashes the same way on a native Intel Mac. This library is built
+  with [`scripts/go-tls-slot.patch`](scripts/go-tls-slot.patch), which moves the plugin's
+  runtime to slot 11 (`0x58(GS)`), the other slot Apple reserves, and the build fails if
+  its disassembly still addresses slot 6. Every library built this way shares slot 11, so an Intel
+  CPA can load only one of them; quota-reset-router, claude-seat-pacer and
+  kpatdev-quota-router in the store use it too. That follows from the mechanism and has
+  not been tried.
+- Go does not support loading a `c-shared` Go library into a Go program on Darwin or
   Windows at all (golang/go#29061, #49457), so for those platforms the table is the
   whole claim.
 
@@ -407,10 +415,15 @@ make dist       # release zips for every platform above, plus checksums.txt
 
 Requires CGO. `make dist` also needs GNU userland and a Docker that can run
 `linux/amd64` images. It builds Linux and Windows in Docker (`scripts/Dockerfile`; zig
-pins the glibc baseline) and `darwin/arm64` on an Apple Silicon Mac over SSH
+pins the glibc baseline) and both Darwin libraries on an Apple Silicon Mac over SSH
 (`MAC_HOST`, default `macbook`; `MAC_PROXY` if downloads there need one), and loads
-each library it can run. Upload them to a draft release, then run
-`.github/workflows/verify-release.yml` on it to load the other two.
+each library it can run, `darwin/amd64` under Rosetta. That one needs Go built from source
+with `scripts/go-tls-slot.patch`, which the Mac does once and keeps in
+`~/Library/Caches/cpa-wb-go-tls`;
+`make build` refuses it. Upload them to a draft release, then run
+`.github/workflows/verify-release.yml` on it to load `linux/arm64` and `windows/amd64`,
+and `darwin/amd64` on a native Intel Mac, there in CPA as well
+(`scripts/cpa-load-darwin-amd64.sh`).
 
 ## License
 

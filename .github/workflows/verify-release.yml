@@ -1,6 +1,7 @@
-# Loads the linux/arm64 and windows/amd64 libraries of a release on native
-# runners. scripts/dist.sh builds them, but neither the build machine nor the
-# Mac can run these two. Run it on the draft before publishing.
+# Loads the linux/arm64, windows/amd64 and darwin/amd64 libraries of a release
+# on native runners. scripts/dist.sh builds them, but neither the build machine
+# nor the Mac can run the first two, and the Mac loads darwin/amd64 only under
+# Rosetta. Run it on the draft before publishing.
 name: verify-release
 
 on:
@@ -52,15 +53,13 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: go run ./tools/loadcheck -version "${TAG#v}" "assets/cpa-codex-weight-balancer.${{ matrix.ext }}"
 
-  # No darwin/amd64 build is released: Go keeps g in a fixed TLS slot there, so a
-  # Go plugin should crash a Go host, and does under Rosetta and on this runner
-  # (v0.7.1). This records what a native Intel Mac does; its outcome never fails
-  # the run.
-  intel-probe:
+  # darwin/amd64 is built with a patched toolchain that keeps g in TLS slot 11;
+  # a stock build shares the host's slot and crashes CPA.
+  darwin-amd64:
     runs-on: macos-15-intel
-    continue-on-error: true
-    permissions:
-      contents: read
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,13 +68,23 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Build and load
+      - name: Download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern "*_darwin_amd64.zip" --pattern checksums.txt
+          cd assets
+          grep '_darwin_amd64\.zip$' checksums.txt | shasum -a 256 -c -
+          unzip -q ./*_darwin_amd64.zip
+      - name: Check the TLS slot
+        run: |
+          otool -tv assets/cpa-codex-weight-balancer.dylib |
+            awk '/%gs:0x30/ { stock++ } /%gs:0x58/ { patched++ } END { print "0x58:", patched + 0, "0x30:", stock + 0; exit !(patched > 0 && !stock) }'
+      - name: Load
         env:
           TAG: ${{ inputs.tag }}
-          CGO_ENABLED: "1"
-          MACOSX_DEPLOYMENT_TARGET: "12.0"
-          CGO_CFLAGS: -O2 -g -mmacosx-version-min=12.0
-          CGO_LDFLAGS: -mmacosx-version-min=12.0
-        run: |
-          go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o probe/cpa-codex-weight-balancer.dylib ./plugin
-          go run ./tools/loadcheck -version "${TAG#v}" probe/cpa-codex-weight-balancer.dylib
+        run: go run ./tools/loadcheck -version "${TAG#v}" assets/cpa-codex-weight-balancer.dylib
+      - name: Load in CPA
+        run: scripts/cpa-load-darwin-amd64.sh assets/cpa-codex-weight-balancer.dylib

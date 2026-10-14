@@ -1,0 +1,29 @@
+--- a/src/cmd/link/internal/ld/sym.go
++++ b/src/cmd/link/internal/ld/sym.go
+@@ -102,12 +102,14 @@
+ 			/*
+ 			 * For x86, Apple has reserved a slot in the TLS for Go. See issue 23617.
+ 			 * That slot is at offset 0x30 on amd64.
++			 * Patched to slot 11 (0x58), Apple's other reserved slot, so a Go
++			 * library loaded into a Go host does not share the host's g slot.
+ 			 * The slot will hold the G pointer.
+ 			 * These constants should match those in runtime/sys_darwin_amd64.s
+ 			 * and runtime/cgo/gcc_darwin_amd64.c.
+ 			 */
+ 		case sys.AMD64:
+-			ctxt.Tlsoffset = 0x30
++			ctxt.Tlsoffset = 0x58
+ 
+ 		case sys.ARM64:
+ 			ctxt.Tlsoffset = 0 // dummy value, not needed
+--- a/src/runtime/sys_darwin_amd64.s
++++ b/src/runtime/sys_darwin_amd64.s
+@@ -395,7 +395,7 @@
+ 
+ 	// Initialize TLS entry.
+ 	// See cmd/link/internal/ld/sym.go:computeTLSOffset.
+-	MOVQ	DX, 0x30(GS)
++	MOVQ	DX, 0x58(GS)
+ 
+ 	CALL	runtime·mstart(SB)
+ 

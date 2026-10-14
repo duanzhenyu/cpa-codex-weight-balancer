@@ -9,7 +9,9 @@ DIST    := dist
 
 all: vet test build
 
+# A stock darwin/amd64 build crashes CPA; scripts/dist.sh builds it with a patched toolchain.
 build:
+	@[ "$(GOOS)/$(GOARCH)" != darwin/amd64 ] || { echo "darwin/amd64 is built by scripts/dist.sh" >&2; exit 1; }
 	@mkdir -p $(DIST)
 	CGO_ENABLED=1 GOOS=$(GOOS) GOARCH=$(GOARCH) \
 		go build -trimpath -ldflags="-s -w" -buildmode=c-shared \
